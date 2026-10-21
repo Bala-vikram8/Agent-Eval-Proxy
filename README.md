@@ -10,12 +10,13 @@ Teams running LLM agents have little visibility into what the model actually ret
 - Stores traces in Postgres.
 - Background worker scores answer relevance with an LLM-as-judge (temperature 0).
 - Streamlit dashboard shows volume, latency, cost, and low-score examples.
+- Demo agent lists models and picks the newest gpt-4 or gpt-5 name it can see.
 
 ## Measured results (local smoke test)
-- 11 traces captured in a single demo run
-- Average latency of successful calls ~1.2 s
-- Total estimated model cost $0.0003 (judge cost not included)
-- Average answer-relevance score on successful responses ~0.75
+- 3 traces captured in a single demo run
+- Average latency 2521 ms
+- Total estimated model cost $0.0001 (judge cost not included)
+- Average answer-relevance score 1.0
 - Tool-call evaluation is not implemented
 
 ## Screenshots
@@ -25,7 +26,7 @@ Teams running LLM agents have little visibility into what the model actually ret
 ## Example trace
 Request: classify support ticket "User cannot login, password reset email not arriving, critical for payroll"  
 Response: Classification: Urgent. Next action: escalate to IT support.  
-Logged: 1397 ms, ~18 tokens, ~$0.00004
+Logged: 2298 ms, ~18 tokens, ~$0.00004
 
 ## Known limitations
 - Tool-call correctness is not evaluated.

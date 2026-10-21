@@ -58,10 +58,11 @@ async def proxy(request: Request, path: str):
     request_id = headers.get("x-request-id", f"req-{int(time.time()*1000)}")
 
     try:
+        if not path.startswith("chat/completions"):
+            raise ValueError("skip non-chat")
         data = json.loads(body) if body else {}
         model = data.get("model", "unknown")
         messages = data.get("messages", [])
-        # Only parse JSON for non-streaming successful responses
         if resp.status_code == 200 and "text/event-stream" not in resp.headers.get("content-type", ""):
             resp_data = resp.json() if resp.content else {}
             usage = resp_data.get("usage")
@@ -73,6 +74,8 @@ async def proxy(request: Request, path: str):
             log_trace(request_id, model, messages, resp_data, usage, latency_ms, tool_calls, resp.status_code)
         else:
             log_trace(request_id, model, messages, {"raw": resp.text[:500]}, None, latency_ms, None, resp.status_code)
+    except ValueError:
+        pass
     except Exception as e:
         print(f"Parse error: {e}")
 
