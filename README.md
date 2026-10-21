@@ -18,6 +18,11 @@ Production agent teams cannot tell whether their system is helping or just burni
 - Average faithfulness 0.75
 - Tool correctness rate 100% (presence check only)
 
+## Screenshots
+![Dashboard metrics](screenshots/dashboard-metrics.png)
+![Recent traces](screenshots/recent-traces.png)
+![Low faithfulness examples](screenshots/low-faithfulness.png)
+
 ## Example trace
 Request: classify support ticket "User cannot login, password reset email not arriving, critical for payroll"
 Response: Classification: Urgent. Next action: escalate to IT support immediately and inform the user their issue is being prioritized.
