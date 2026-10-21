@@ -11,12 +11,12 @@ app = FastAPI(title="AgentEval Proxy")
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-TARGET_BASE = "https://api.openai.com"
+TARGET_BASE = os.getenv("UPSTREAM_BASE", "https://api.openai.com")
 
 def get_db():
     return psycopg2.connect(DATABASE_URL)
 
-def log_trace(request_id, model, messages, response, usage, latency_ms, tool_calls=None):
+def log_trace(request_id, model, messages, response, usage, latency_ms, tool_calls=None, status_code=200):
     try:
         conn = get_db()
         cur = conn.cursor()
@@ -26,10 +26,10 @@ def log_trace(request_id, model, messages, response, usage, latency_ms, tool_cal
         cost = (prompt_tokens * 0.00000015) + (completion_tokens * 0.0000006)
         cur.execute(
             """
-            INSERT INTO traces (request_id, model, messages, response, prompt_tokens, completion_tokens, total_tokens, latency_ms, cost_usd, tool_calls)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO traces (request_id, model, messages, response, prompt_tokens, completion_tokens, total_tokens, latency_ms, cost_usd, tool_calls, status_code)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
-            (request_id, model, Json(messages), Json(response), prompt_tokens, completion_tokens, total_tokens, latency_ms, cost, Json(tool_calls or []))
+            (request_id, model, Json(messages), Json(response), prompt_tokens, completion_tokens, total_tokens, latency_ms, cost, Json(tool_calls or []), status_code)
         )
         conn.commit()
         cur.close()
@@ -61,18 +61,21 @@ async def proxy(request: Request, path: str):
         data = json.loads(body) if body else {}
         model = data.get("model", "unknown")
         messages = data.get("messages", [])
-        resp_data = resp.json() if resp.content else {}
-        usage = resp_data.get("usage")
-        tool_calls = None
-        if "choices" in resp_data:
-            for choice in resp_data["choices"]:
-                if "message" in choice and "tool_calls" in choice["message"]:
-                    tool_calls = choice["message"]["tool_calls"]
-        log_trace(request_id, model, messages, resp_data, usage, latency_ms, tool_calls)
+        # Only parse JSON for non-streaming successful responses
+        if resp.status_code == 200 and "text/event-stream" not in resp.headers.get("content-type", ""):
+            resp_data = resp.json() if resp.content else {}
+            usage = resp_data.get("usage")
+            tool_calls = None
+            if "choices" in resp_data:
+                for choice in resp_data["choices"]:
+                    if "message" in choice and "tool_calls" in choice["message"]:
+                        tool_calls = choice["message"]["tool_calls"]
+            log_trace(request_id, model, messages, resp_data, usage, latency_ms, tool_calls, resp.status_code)
+        else:
+            log_trace(request_id, model, messages, {"raw": resp.text[:500]}, None, latency_ms, None, resp.status_code)
     except Exception as e:
         print(f"Parse error: {e}")
 
-    # Strip headers that break clients
     response_headers = {
         k: v for k, v in resp.headers.items()
         if k.lower() not in ("content-encoding", "transfer-encoding", "content-length")
