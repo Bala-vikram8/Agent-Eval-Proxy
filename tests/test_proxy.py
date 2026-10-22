@@ -66,7 +66,7 @@ def test_stream_reaches_client_incrementally(proxy, db):
     payloads = [json.loads(data) for _, data in events if data != "[DONE]"]
     first_content_at = next(t for (t, data) in events
                             if data != "[DONE]" and json.loads(data)["choices"][0]["delta"].get("content"))
-    assert end - start > 0.8, "mock should take about a second to stream this reply"
+    assert end - start > 0.6, "the mock sleeps 100 ms before each of eight chunks"
     assert first_content_at - start < (end - start) / 2, "proxy buffered the stream"
     # The proxy asked upstream for usage, but the caller did not, so it must not see that chunk.
     assert all(p["choices"] for p in payloads)
