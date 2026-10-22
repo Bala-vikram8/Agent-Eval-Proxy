@@ -1,8 +1,0 @@
-fastapi
-uvicorn
-httpx
-psycopg2-binary
-streamlit
-pandas
-langgraph
-openai
