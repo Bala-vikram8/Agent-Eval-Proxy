@@ -14,10 +14,10 @@ A local, OpenAI compatible proxy that records every chat completion an agent mak
 flowchart LR
     A[Agent] -->|OpenAI API calls| P[Proxy<br/>FastAPI]
     P -->|forwarded| U[OpenAI or any<br/>compatible upstream]
-    P -.->|trace, written after the response| DB[(Postgres)]
-    W[Eval worker] -->|claims pending traces| DB
+    P -.->|trace, after the response| DB[(Postgres)]
+    DB <-->|claim trace, save score| W[Eval worker]
     W -->|grading prompt| J[LLM judge]
-    D[Streamlit dashboard] -->|SQL views| DB
+    DB -->|SQL views| D[Streamlit dashboard]
 ```
 
 * **Proxy.** Forwards every request and records each `POST /v1/chat/completions` call: messages, response, status, token counts, latency and, for streams, time to first token. Streams reach the caller event by event while the proxy rebuilds the full reply, tool calls included, for the log. Traces are written on a separate thread after the response is sent, and a database outage never fails a request.
