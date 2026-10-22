@@ -1,4 +1,8 @@
-version: '3.8'
+# Postgres, a one shot schema migration, the proxy, the eval worker and the dashboard.
+# Every published port is bound to 127.0.0.1, so nothing is reachable from other machines.
+name: agenteval
+
+x-database-url: &database-url postgresql://${POSTGRES_USER:-agenteval}:${POSTGRES_PASSWORD:-agenteval}@postgres:5432/${POSTGRES_DB:-agenteval}
 
 services:
   postgres:
@@ -9,56 +13,85 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-agenteval}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql
     ports:
-      - "5432:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-agenteval}"]
-      interval: 5s
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
       timeout: 5s
-      retries: 5
+      retries: 30
+
+  # Applies sql/init.sql on every start. The file is idempotent and upgrades old databases.
+  migrate:
+    image: postgres:16
+    command: ["psql", "-v", "ON_ERROR_STOP=1", "-q", "-f", "/sql/init.sql"]
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER:-agenteval}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-agenteval}
+      PGDATABASE: ${POSTGRES_DB:-agenteval}
+    volumes:
+      - ./sql:/sql:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
 
   proxy:
     build: ./proxy
     ports:
-      - "${PROXY_PORT:-8000}:8000"
+      - "127.0.0.1:${PROXY_PORT:-8000}:8000"
     environment:
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
-      DATABASE_URL: postgresql://${POSTGRES_USER:-agenteval}:${POSTGRES_PASSWORD:-agenteval}@postgres:5432/${POSTGRES_DB:-agenteval}
+      DATABASE_URL: *database-url
+      UPSTREAM_BASE: ${UPSTREAM_BASE:-https://api.openai.com}
+      UPSTREAM_API_KEY: ${UPSTREAM_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      PROXY_API_KEY: ${PROXY_API_KEY:-}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
     depends_on:
-      postgres:
-        condition: service_healthy
-    restart: unless-stopped
-
-  dashboard:
-    build: ./dashboard
-    ports:
-      - "${DASHBOARD_PORT:-8501}:8501"
-    environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-agenteval}:${POSTGRES_PASSWORD:-agenteval}@postgres:5432/${POSTGRES_DB:-agenteval}
-    depends_on:
-      - postgres
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   eval:
     build: ./eval
     environment:
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
-      DATABASE_URL: postgresql://${POSTGRES_USER:-agenteval}:${POSTGRES_PASSWORD:-agenteval}@postgres:5432/${POSTGRES_DB:-agenteval}
+      DATABASE_URL: *database-url
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      JUDGE_API_KEY: ${JUDGE_API_KEY:-}
+      JUDGE_BASE_URL: ${JUDGE_BASE_URL:-}
+      JUDGE_MODEL: ${JUDGE_MODEL:-gpt-4o-mini}
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
 
+  dashboard:
+    build: ./dashboard
+    ports:
+      - "127.0.0.1:${DASHBOARD_PORT:-8501}:8501"
+    environment:
+      DATABASE_URL: *database-url
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # Sends sample traffic through the proxy: docker compose --profile demo run --rm demo
   demo:
     build: ./demo_agent
+    profiles: ["demo"]
     environment:
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
       PROXY_URL: http://proxy:8000/v1
+      DEMO_MODEL: ${DEMO_MODEL:-gpt-4o-mini}
+      PROXY_API_KEY: ${PROXY_API_KEY:-}
     depends_on:
-      - proxy
-    profiles:
-      - demo
+      proxy:
+        condition: service_healthy
 
 volumes:
   postgres_data:
