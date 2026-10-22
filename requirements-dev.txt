@@ -1,0 +1,6 @@
+-r proxy/requirements.txt
+-r eval/requirements.txt
+-r dashboard/requirements.txt
+-r demo_agent/requirements.txt
+-r mock_upstream/requirements.txt
+pytest==9.1.1
