@@ -21,7 +21,7 @@ Teams running LLM agents have little visibility into what the model actually ret
 
 ## Screenshots
 ![Dashboard metrics](screenshots/dashboard-metrics.png)
-![Low score examples](screenshots/low-faithfulness.png)
+
 
 ## Example trace
 Request: classify support ticket "User cannot login, password reset email not arriving, critical for payroll"  
