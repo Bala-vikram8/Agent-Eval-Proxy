@@ -1,0 +1,26 @@
+# Runs the whole stack with no API key. The proxy and the judge both talk to a mock
+# upstream that returns deterministic replies and stub judge scores.
+#   docker compose -f docker-compose.yml -f docker-compose.offline.yml up --build -d
+services:
+  mock-upstream:
+    build: ./mock_upstream
+    environment:
+      MOCK_LATENCY_MS: "250"
+      MOCK_JITTER_MS: "900"
+      MOCK_STREAM_DELAY_MS: "40"
+
+  proxy:
+    environment:
+      UPSTREAM_BASE: http://mock-upstream:9000
+      UPSTREAM_API_KEY: offline
+    depends_on:
+      mock-upstream:
+        condition: service_started
+
+  eval:
+    environment:
+      JUDGE_BASE_URL: http://mock-upstream:9000/v1
+      JUDGE_API_KEY: offline
+    depends_on:
+      mock-upstream:
+        condition: service_started
