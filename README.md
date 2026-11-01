@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Bala-vikram8/Agent-Eval-Proxy/actions/workflows/ci.yml/badge.svg)](https://github.com/Bala-vikram8/Agent-Eval-Proxy/actions/workflows/ci.yml)
 
-A local, OpenAI compatible proxy that records every chat completion an agent makes, streamed or not, in Postgres. A background worker grades each reply with an LLM judge, and a Streamlit dashboard shows error rate, latency percentiles, time to first token, cost per model, and what the judge itself costs. The agent only changes its base URL.
+A local, OpenAI-compatible proxy that forwards an agent's model requests and records best-effort traces for `POST /v1/chat/completions`, including streamed responses, in Postgres. A background worker evaluates **answer relevance** (whether a text reply addresses the user's request), not factual correctness. A Streamlit dashboard shows error rates, latency, time to first token, model costs, and evaluation results. To use the proxy, an OpenAI-compatible agent changes its base URL. **This is a local engineering demo, not a production-ready safety or monitoring service.**
 
 ![AgentEval dashboard](screenshots/dashboard.png)
 
@@ -20,12 +20,19 @@ flowchart LR
     DB -->|SQL views| D[Streamlit dashboard]
 ```
 
-* **Proxy.** Forwards every request and records each `POST /v1/chat/completions` call: messages, response, status, token counts, latency and, for streams, time to first token. Streams reach the caller event by event while the proxy rebuilds the full reply, tool calls included, for the log. Traces are written on a separate thread after the response is sent, and a database outage never fails a request.
-* **Eval worker.** Grades answer relevance (does the reply address the request?) with a judge model at temperature 0 and JSON output. Every trace ends `scored`, `skipped` with a reason (upstream error, or a turn that only calls a tool), or `failed` after three attempts with backoff. Workers claim rows with `FOR UPDATE SKIP LOCKED`, so several can share the queue.
+* **Proxy.** Forwards requests under `/v1/` and attempts to record each `POST /v1/chat/completions` call: messages, response, status, token counts, latency and, for streams, time to first token. Streams reach the caller event by event while the proxy reconstructs the reply, including tool calls. Trace writes run in a separate thread after a non-streamed response is read or a stream ends. If Postgres is unavailable, requests continue but traces may be lost.
+* **Eval worker.** Asynchronously grades answer relevance (does the text reply address the latest user request?) using a judge model at temperature 0 with JSON output. This does **not** establish that a reply is true, safe, or grounded in evidence. Persisted traces become `scored`, `skipped` with a reason (such as an upstream error or tool-only turn), or `failed` after three judge attempts with backoff. Workers claim rows with `FOR UPDATE SKIP LOCKED` so several can share the queue.
 * **Cost in SQL.** Cost is never stored. Views join token counts to a `model_prices` table, so fixing a price corrects history, and a model without a price shows as unpriced instead of being priced at the wrong rate. The judge's own spend is tracked the same way.
 * **Schema.** `sql/init.sql` is idempotent and runs on every start, so databases from earlier versions upgrade in place.
 
 [docs/DESIGN.md](docs/DESIGN.md) explains each decision and its tradeoffs.
+
+## What this demo does and does not do
+
+* **After-the-fact evaluations:** The worker scores stored replies after the agent has already received them. It does not block an incorrect answer or prevent it from reaching a user.
+* **No automatic drift detection or alerts:** The dashboard exposes relevance scores and operational metrics for manual inspection, but it does not currently detect metric degradation over time or send notifications.
+* **Best-effort tracing:** Writes are submitted to an in-process thread pool, not a durable queue. A database outage or an abrupt proxy shutdown can permanently lose traces.
+* **Local and synthetic data only:** The demo uses a mock upstream and synthetic tickets. Actual messages and responses are stored without sensitive-data redaction, role-based access, or a retention policy. Do not use real patient information, dealership customer data, or other confidential data in this version; do not expose the local services to the public internet.
 
 ## Quick start
 
@@ -107,11 +114,23 @@ scripts/e2e_offline.sh
 ## Limitations
 
 * Only chat completions are recorded. The Responses API, embeddings and other endpoints pass through without a trace.
-* Relevance is not correctness. The judge checks that a reply addresses the request, not that it is true.
-* The reply under test sits inside the judge prompt, so a reply can try to steer its own score.
-* Full message history is stored on every call and there is no retention policy yet.
-* A trace still queued for writing is lost if the proxy is killed.
-* The dashboard and Postgres have no authentication; they are only safe because they bind to localhost.
+* The judge measures relevance, **not factual accuracy, hallucinations, policy compliance, or source faithfulness**. Its score is not a safety guarantee.
+* The response being judged is part of the judge input and can attempt to manipulate the score.
+* No automated drift baselines, alerts, or user-facing quality gates are implemented.
+* Messages and responses are stored without redaction or a retention policy. Database and dashboard access controls are not implemented; published Docker ports bind to localhost for demo use.
+* In-process trace writes have no durability guarantee, bounded queue, or recovery mechanism if a database is down or the proxy stops unexpectedly.
+
+## Before deploying to the cloud
+
+This repository is **not ready for production traffic or sensitive customer data**. Planned engineering work, in priority order:
+
+1. **Privacy and access:** redact or minimize sensitive data before storage, implement retention and deletion, authenticate the dashboard and API, isolate customer data, and manage secrets and encryption.
+2. **Reliable trace ingestion:** use a bounded, durable queue with backpressure, retries, idempotent processing, and visibility into dropped or delayed traces.
+3. **Higher-quality evaluation:** add task-specific correctness and groundedness checks backed by references, realistic labeled test cases, prompt-injection resilience testing, and configurable evaluation sampling.
+4. **Operational monitoring:** add per-agent baselines and drift alerts, queue-depth and worker-health monitoring, structured logs and traces, and incident procedures.
+5. **Cloud delivery:** deploy containerized components with managed Postgres and a durable queue, private networking and least-privilege access, automated CI deployment, backup and recovery, load testing, and cost limits.
+
+All of these are future tasks, not features already implemented. Use synthetic test data during development.
 
 ## Related tools
 
