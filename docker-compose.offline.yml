@@ -11,16 +11,27 @@ services:
 
   proxy:
     environment:
+      ALLOW_INSECURE_LOCAL: "true"
+      TRACE_CONTENT_MODE: redacted
       UPSTREAM_BASE: http://mock-upstream:9000
       UPSTREAM_API_KEY: offline
     depends_on:
       mock-upstream:
         condition: service_started
 
+  ingest:
+    environment:
+      TRACE_CONTENT_MODE: redacted
+
   eval:
     environment:
+      ALLOW_INSECURE_LOCAL: "true"
       JUDGE_BASE_URL: http://mock-upstream:9000/v1
       JUDGE_API_KEY: offline
     depends_on:
       mock-upstream:
         condition: service_started
+
+  dashboard:
+    environment:
+      ALLOW_INSECURE_LOCAL: "true"

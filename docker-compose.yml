@@ -1,8 +1,25 @@
-# Postgres, a one shot schema migration, the proxy, the eval worker and the dashboard.
-# Every published port is bound to 127.0.0.1, so nothing is reachable from other machines.
+# Local development only. Production uses isolated private services and secret injection;
+# see docs/DEPLOYMENT.md. Secure mode fails startup without configured credentials.
 name: agenteval
 
-x-database-url: &database-url postgresql://${POSTGRES_USER:-agenteval}:${POSTGRES_PASSWORD:-agenteval}@postgres:5432/${POSTGRES_DB:-agenteval}
+x-hardened: &hardened
+  init: true
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m,mode=1777
+  pids_limit: 128
+  mem_limit: 768m
+  cpus: 1.0
+  stop_grace_period: 30s
+  restart: unless-stopped
+
+x-trace-queue: &trace-queue
+  TRACE_QUEUE_BACKEND: sqlite
+  TRACE_SPOOL_PATH: /var/lib/agenteval/traces.sqlite3
+  TRACE_INGEST_EMBEDDED: "false"
+  TRACE_INGEST_HEALTH_PATH: /var/lib/agenteval/ingest-health.json
 
 services:
   postgres:
@@ -11,87 +28,140 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-agenteval}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agenteval}
       POSTGRES_DB: ${POSTGRES_DB:-agenteval}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes: [postgres_data:/var/lib/postgresql/data]
+    ports: ["127.0.0.1:${POSTGRES_PORT:-5432}:5432"]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      # The image briefly starts a socket-only server while creating the DB.
+      # Require a real TCP query so migration cannot race that temporary server.
+      test: ["CMD-SHELL", "PGPASSWORD=\"$${POSTGRES_PASSWORD}\" psql -h 127.0.0.1 -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\" -v ON_ERROR_STOP=1 -tAc 'SELECT 1' >/dev/null"]
       interval: 2s
       timeout: 5s
       retries: 30
+    restart: unless-stopped
 
-  # Applies sql/init.sql on every start. The file is idempotent and upgrades old databases.
   migrate:
-    image: postgres:16
-    command: ["psql", "-v", "ON_ERROR_STOP=1", "-q", "-f", "/sql/init.sql"]
+    build: ./sql
     environment:
       PGHOST: postgres
       PGUSER: ${POSTGRES_USER:-agenteval}
       PGPASSWORD: ${POSTGRES_PASSWORD:-agenteval}
       PGDATABASE: ${POSTGRES_DB:-agenteval}
-    volumes:
-      - ./sql:/sql:ro
+      INGEST_DB_PASSWORD: ${INGEST_DB_PASSWORD:-ingest_dev_only}
+      EVAL_DB_PASSWORD: ${EVAL_DB_PASSWORD:-eval_dev_only}
+      DASHBOARD_DB_PASSWORD: ${DASHBOARD_DB_PASSWORD:-dashboard_dev_only}
+      MONITOR_DB_PASSWORD: ${MONITOR_DB_PASSWORD:-monitor_dev_only}
     depends_on:
-      postgres:
-        condition: service_healthy
+      postgres: {condition: service_healthy}
     restart: "no"
 
   proxy:
+    <<: *hardened
     build: ./proxy
-    ports:
-      - "127.0.0.1:${PROXY_PORT:-8000}:8000"
+    ports: ["127.0.0.1:${PROXY_PORT:-8000}:8000"]
     environment:
-      DATABASE_URL: *database-url
+      <<: *trace-queue
+      DATABASE_URL: postgresql://agenteval_ingest:${INGEST_DB_PASSWORD:-ingest_dev_only}@postgres:5432/${POSTGRES_DB:-agenteval}
       UPSTREAM_BASE: ${UPSTREAM_BASE:-https://api.openai.com}
       UPSTREAM_API_KEY: ${UPSTREAM_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       PROXY_API_KEY: ${PROXY_API_KEY:-}
+      ALLOW_INSECURE_LOCAL: ${ALLOW_INSECURE_LOCAL:-false}
+      TRACE_CONTENT_MODE: ${TRACE_CONTENT_MODE:-metadata}
+      PROXY_MAX_REQUEST_BYTES: ${PROXY_MAX_REQUEST_BYTES:-1048576}
+      PROXY_MAX_CONCURRENT: ${PROXY_MAX_CONCURRENT:-64}
+      PROXY_REQUESTS_PER_MINUTE: ${PROXY_REQUESTS_PER_MINUTE:-1200}
+    volumes: [trace_spool:/var/lib/agenteval]
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=3)"]
       interval: 2s
       timeout: 5s
       retries: 30
     depends_on:
-      migrate:
-        condition: service_completed_successfully
-    restart: unless-stopped
+      migrate: {condition: service_completed_successfully}
+
+  ingest:
+    <<: *hardened
+    build: ./proxy
+    command: ["python", "ingest_worker.py"]
+    environment:
+      <<: *trace-queue
+      TRACE_CONTENT_MODE: ${TRACE_CONTENT_MODE:-metadata}
+      DATABASE_URL: postgresql://agenteval_ingest:${INGEST_DB_PASSWORD:-ingest_dev_only}@postgres:5432/${POSTGRES_DB:-agenteval}
+    volumes: [trace_spool:/var/lib/agenteval]
+    healthcheck:
+      test: ["CMD", "python", "ingest_worker.py", "--health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    depends_on:
+      migrate: {condition: service_completed_successfully}
 
   eval:
+    <<: *hardened
     build: ./eval
     environment:
-      DATABASE_URL: *database-url
+      DATABASE_URL: postgresql://agenteval_eval:${EVAL_DB_PASSWORD:-eval_dev_only}@postgres:5432/${POSTGRES_DB:-agenteval}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       JUDGE_API_KEY: ${JUDGE_API_KEY:-}
       JUDGE_BASE_URL: ${JUDGE_BASE_URL:-}
       JUDGE_MODEL: ${JUDGE_MODEL:-gpt-4o-mini}
+      ALLOW_INSECURE_LOCAL: ${ALLOW_INSECURE_LOCAL:-false}
+    healthcheck:
+      test: ["CMD", "python", "eval_engine.py", "--health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
     depends_on:
-      migrate:
-        condition: service_completed_successfully
-    restart: unless-stopped
+      migrate: {condition: service_completed_successfully}
 
   dashboard:
+    <<: *hardened
     build: ./dashboard
-    ports:
-      - "127.0.0.1:${DASHBOARD_PORT:-8501}:8501"
+    mem_limit: 1g
+    ports: ["127.0.0.1:${DASHBOARD_PORT:-8501}:8501"]
     environment:
-      DATABASE_URL: *database-url
+      DATABASE_URL: postgresql://agenteval_dashboard:${DASHBOARD_DB_PASSWORD:-dashboard_dev_only}@postgres:5432/${POSTGRES_DB:-agenteval}
+      ALLOW_INSECURE_LOCAL: ${ALLOW_INSECURE_LOCAL:-false}
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:-}
+      STREAMLIT_BROWSER_GATHER_USAGE_STATS: "false"
+      STREAMLIT_SERVER_ENABLE_XSRF_PROTECTION: "true"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
     depends_on:
-      migrate:
-        condition: service_completed_successfully
-    restart: unless-stopped
+      migrate: {condition: service_completed_successfully}
 
-  # Sends sample traffic through the proxy: docker compose --profile demo run --rm demo
+  monitor:
+    <<: *hardened
+    build: ./dashboard
+    command: ["python", "monitor.py"]
+    environment:
+      DATABASE_URL: postgresql://agenteval_monitor:${MONITOR_DB_PASSWORD:-monitor_dev_only}@postgres:5432/${POSTGRES_DB:-agenteval}
+    healthcheck:
+      test: ["CMD", "python", "monitor.py", "--health"]
+      interval: 15s
+      timeout: 7s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+
   demo:
+    <<: *hardened
     build: ./demo_agent
-    profiles: ["demo"]
+    profiles: [demo]
+    restart: "no"
     environment:
       PROXY_URL: http://proxy:8000/v1
       DEMO_MODEL: ${DEMO_MODEL:-gpt-4o-mini}
       PROXY_API_KEY: ${PROXY_API_KEY:-}
     depends_on:
-      proxy:
-        condition: service_healthy
+      proxy: {condition: service_healthy}
 
 volumes:
   postgres_data:
+  trace_spool:

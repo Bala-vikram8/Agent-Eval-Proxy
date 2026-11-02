@@ -5,6 +5,13 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   tests:
     runs-on: ubuntu-latest
@@ -15,29 +22,94 @@ jobs:
           POSTGRES_PASSWORD: postgres
         ports: ["5432:5432"]
         options: >-
-          --health-cmd pg_isready
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres -d postgres"
           --health-interval 2s
           --health-timeout 5s
           --health-retries 30
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: "**/requirements*.txt"
-      - run: pip install -r requirements-dev.txt
-      - run: pytest
+      - run: pip install -r requirements-lock.txt
+      - run: python -m pytest --junitxml=artifacts/pytest.xml
         env:
           TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+      - name: Exercise durable worker crash and replay recovery
+        run: python scripts/recovery_exercise.py --samples 25 --output artifacts/recovery
+        env:
+          TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: test-results
+          path: |
+            artifacts/pytest.xml
+            artifacts/recovery/
+
+  dependency-security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r requirements-lock.txt
+      - run: mkdir -p artifacts
+      - run: python -m pip_audit --vulnerability-service pypi --format json --output artifacts/pip-audit.json
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: dependency-audit
+          path: artifacts/pip-audit.json
+
+  infrastructure-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+        with:
+          terraform_version: "1.10.5"
+      - run: terraform fmt -check -recursive infra/aws
+      - run: terraform -chdir=infra/aws init -backend=false -input=false
+      - run: terraform -chdir=infra/aws validate
+      - run: terraform -chdir=infra/aws test
 
   docker-e2e:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - run: scripts/e2e_offline.sh
       - if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: e2e-logs
           path: e2e-logs.txt
+
+  container-security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: docker compose -f docker-compose.yml -f docker-compose.offline.yml --profile demo build
+      - run: docker build -t agenteval-migrate:latest ./sql
+      - run: mkdir -p artifacts
+      - name: Scan runtime images for high and critical vulnerabilities
+        shell: bash
+        run: |
+          result=0
+          for image in proxy ingest eval dashboard monitor demo mock-upstream migrate postgres; do
+            target="agenteval-${image}:latest"
+            if [ "$image" = postgres ]; then target="postgres:16"; fi
+            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+              -v "$PWD/artifacts:/reports" aquasec/trivy:0.67.2@sha256:ac2f9d0197456a8ce460884b113e49d65b667f506c31d014c9955869a7a5d682 image \
+              --exit-code 1 --severity HIGH,CRITICAL --format json \
+              --output "/reports/trivy-${image}.json" "$target" || result=1
+          done
+          exit "$result"
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: container-audit
+          path: artifacts/trivy-*.json

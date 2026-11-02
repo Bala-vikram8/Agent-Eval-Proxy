@@ -1,2 +1,4 @@
 langgraph==1.2.16
 openai==3.36.1
+# Fix audited bootstrap-tool advisories; keep runtime tooling patched.
+pip==26.2.0

@@ -1,2 +1,4 @@
 fastapi==0.159.1
 uvicorn==0.54.0
+# Fix audited bootstrap-tool advisories; keep runtime tooling patched.
+pip==26.2.0
