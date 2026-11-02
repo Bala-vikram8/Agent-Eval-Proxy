@@ -11,8 +11,9 @@ import json
 import os
 import re
 import time
+from collections import deque
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 LATENCY_MS = int(os.getenv("MOCK_LATENCY_MS", "0"))
@@ -28,13 +29,16 @@ STOPWORDS = {
 }
 
 app = FastAPI(title="Mock OpenAI upstream")
-seen_authorization: list[str | None] = []
+CAPTURE_AUTH = os.getenv("MOCK_CAPTURE_AUTH", "").lower() == "true"
+seen_authorization: deque[str | None] = deque(maxlen=50)
 
 
 @app.get("/mock/seen-authorization")
 async def seen():
     """Lets tests check which key the proxy forwarded."""
-    return {"authorization": seen_authorization[-50:]}
+    if not CAPTURE_AUTH:
+        raise HTTPException(status_code=404, detail="Not found")
+    return {"authorization": list(seen_authorization)}
 
 
 @app.get("/v1/models")
@@ -44,7 +48,8 @@ async def models():
 
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
-    seen_authorization.append(request.headers.get("authorization"))
+    if CAPTURE_AUTH:
+        seen_authorization.append(request.headers.get("authorization"))
     body = await request.json()
     model = body.get("model")
     messages = body.get("messages") or []
@@ -187,10 +192,18 @@ def keywords(text: str) -> set[str]:
 
 def judge(model: str, messages: list):
     prompt = text_of(messages[-1])
-    request = re.search(r"<user_request>(.*?)</user_request>", prompt, re.S)
-    reply = re.search(r"<assistant_reply>(.*?)</assistant_reply>", prompt, re.S)
-    request_text = request.group(1) if request else ""
-    reply_text = reply.group(1) if reply else ""
+    try:
+        envelope = json.loads(prompt)
+        if not isinstance(envelope, dict):
+            raise ValueError("invalid judge envelope")
+        request_text = str(envelope.get("user_request", ""))
+        reply_text = str(envelope.get("assistant_reply", ""))
+    except (ValueError, TypeError):
+        # Compatibility for tests exercising the older tagged format only.
+        request = re.search(r"<user_request>(.*?)</user_request>", prompt, re.S)
+        reply = re.search(r"<assistant_reply>(.*?)</assistant_reply>", prompt, re.S)
+        request_text = request.group(1) if request else ""
+        reply_text = reply.group(1) if reply else ""
     if "[judge-fail]" in reply_text:
         return JSONResponse(status_code=500, content={"error": {"message": "mock judge failure", "type": "server_error"}})
     shared = keywords(request_text) & keywords(reply_text)

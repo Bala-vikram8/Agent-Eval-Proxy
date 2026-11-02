@@ -2,3 +2,7 @@ fastapi==0.159.1
 uvicorn[standard]==0.54.0
 httpx==0.28.1
 psycopg2-binary==2.9.13
+boto3==1.43.123
+google-re2==1.1.20251105
+# Fix audited bootstrap-tool advisories; keep runtime tooling patched.
+pip==26.2.0

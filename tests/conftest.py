@@ -5,6 +5,7 @@ import os
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -15,8 +16,8 @@ import pytest
 from psycopg2 import sql
 
 ROOT = Path(__file__).resolve().parents[1]
-os.environ.setdefault("NO_PROXY", "127.0.0.1,localhost")
-os.environ.setdefault("no_proxy", "127.0.0.1,localhost")
+for proxy_name in ("NO_PROXY", "no_proxy"):
+    os.environ[proxy_name] = os.environ.get(proxy_name, "") + ",127.0.0.1,localhost"
 
 
 def free_port() -> int:
@@ -40,15 +41,20 @@ def wait_until_up(url: str, proc: subprocess.Popen, timeout: float = 20) -> None
 
 # Settings each test passes explicitly, never inherited from the developer's shell.
 CONTROLLED_ENV = {"OPENAI_API_KEY", "UPSTREAM_API_KEY", "UPSTREAM_BASE", "PROXY_API_KEY", "DATABASE_URL",
-                  "JUDGE_API_KEY", "JUDGE_BASE_URL", "JUDGE_MODEL"}
+                  "JUDGE_API_KEY", "JUDGE_BASE_URL", "JUDGE_MODEL", "ALLOW_INSECURE_LOCAL",
+                  "TRACE_CONTENT_MODE", "TRACE_SPOOL_PATH", "TRACE_QUEUE_BACKEND", "MOCK_CAPTURE_AUTH"}
 
 
 @contextlib.contextmanager
 def run_server(app_dir: str, app: str, port: int, env: dict, health_path: str):
     base_env = {k: v for k, v in os.environ.items() if k not in CONTROLLED_ENV}
+    spool = tempfile.TemporaryDirectory(prefix="agenteval-test-spool-")
+    local_test_env = {"ALLOW_INSECURE_LOCAL": "true", "TRACE_CONTENT_MODE": "redacted",
+                      "TRACE_SPOOL_PATH": str(Path(spool.name) / "traces.sqlite3"),
+                      "TRACE_QUEUE_BACKEND": "sqlite", "MOCK_CAPTURE_AUTH": "true"}
     proc = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", app, "--host", "127.0.0.1", "--port", str(port), "--log-level", "warning"],
-        cwd=ROOT / app_dir, env={**base_env, **env}, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        cwd=ROOT / app_dir, env={**base_env, **local_test_env, **env}, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
     )
     try:
         wait_until_up(f"http://127.0.0.1:{port}{health_path}", proc)
@@ -59,6 +65,8 @@ def run_server(app_dir: str, app: str, port: int, env: dict, health_path: str):
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
             proc.kill()
+            proc.wait(timeout=5)
+        spool.cleanup()
 
 
 def apply_schema(dsn: str, path: Path = ROOT / "sql" / "init.sql") -> None:
@@ -111,7 +119,7 @@ def db(database):
     with contextlib.closing(psycopg2.connect(database)) as conn:
         conn.autocommit = True
         with conn.cursor() as cur:
-            cur.execute("TRUNCATE traces RESTART IDENTITY")
+            cur.execute("TRUNCATE traces RESTART IDENTITY CASCADE")
     return database
 
 

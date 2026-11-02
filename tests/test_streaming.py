@@ -52,3 +52,43 @@ def test_tool_call_deltas_are_merged():
     [call] = acc.tool_calls
     assert call["id"] == "call_1" and call["function"] == {"name": "lookup", "arguments": '{"id": 42}'}
     assert acc.response()["choices"][0]["message"]["content"] is None
+
+
+def test_crlf_delimiters_split_at_every_byte_boundary():
+    raw = (event(chunk({'content': 'hello'}, 'stop')) + b'data: [DONE]\n\n').replace(b'\n', b'\r\n')
+    for split in range(1, len(raw)):
+        acc = StreamAccumulator()
+        out = acc.feed(raw[:split], 0) + acc.feed(raw[split:], 1)
+        assert acc.response()['choices'][0]['message']['content'] == 'hello'
+        assert acc.done
+        assert b''.join(out) == raw.replace(b'\r\n', b'\n')
+
+
+def test_sse_event_size_limit_without_delimiter():
+    import pytest
+    from streaming import StreamLimitError
+    acc = StreamAccumulator(max_event_bytes=32)
+    with pytest.raises(StreamLimitError):
+        acc.feed(b'data: ' + b'x' * 33, 0)
+
+
+def test_capture_limit_does_not_change_forwarded_completion():
+    raw = event(chunk({'content': 'long synthetic text'}, 'stop')) + b'data: [DONE]\n\n'
+    acc = StreamAccumulator(max_capture_bytes=4)
+    assert b''.join(acc.feed(raw, 0)) == raw
+    assert acc.done and acc.capture_truncated
+    assert acc.response()['choices'][0]['message']['content'] is None
+
+
+def test_malformed_provider_shapes_do_not_crash_parser():
+    acc = StreamAccumulator()
+    for malformed in [{'choices': [None]}, {'choices': 'wrong'},
+                      {'choices': [{'delta': {'content': {}, 'tool_calls': [None, {'index': []}]}}]}]:
+        assert acc.feed(event(malformed), 0) == [event(malformed)]
+
+
+def test_deeply_nested_provider_json_is_marked_malformed_without_crashing():
+    raw = b'data: ' + b'[' * 1200 + b'0' + b']' * 1200 + b'\n\n'
+    acc = StreamAccumulator()
+    assert acc.feed(raw, 0) == [raw]
+    assert acc.malformed and not acc.done

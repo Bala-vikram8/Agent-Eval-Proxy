@@ -2,6 +2,7 @@
 import contextlib
 import sys
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 import psycopg2
 from psycopg2.extras import Json
@@ -71,3 +72,52 @@ def test_upgrade_from_second_version_keeps_scores(make_database):
     assert row["eval_status"] == "scored" and float(row["relevance_score"]) == 1.0
     assert row["relevance_reason"] == "relevant" and row["unpriced"] is True
     assert proxy_can_write(dsn)
+
+
+def test_upgrade_preserves_version_one_evaluation_history(make_database):
+    dsn = make_database()
+    apply_schema(dsn, FIXTURES / "schema_v1.sql")
+    execute(dsn, "INSERT INTO traces(id,model,messages,response) VALUES (71,'synthetic','[]','{}')")
+    execute(dsn, """INSERT INTO evaluations(trace_id,faithfulness_score,judge_reason)
+        VALUES (71,0.75,'legacy synthetic relevance')""")
+    apply_schema(dsn)
+    apply_schema(dsn)
+    [row] = fetch(dsn, "SELECT eval_status,relevance_score,relevance_reason FROM traces WHERE id=71")
+    assert row["eval_status"] == "scored" and float(row["relevance_score"]) == 0.75
+    assert row["relevance_reason"] == "legacy synthetic relevance"
+    runs = fetch(dsn, "SELECT * FROM evaluation_runs WHERE trace_id=71 AND config_version='schema-v1'")
+    assert len(runs) == 1 and runs[0]["evaluator_name"] == "answer_relevance"
+
+
+def test_exact_dated_model_price_takes_precedence_and_missing_judge_is_visible(make_database):
+    dsn = make_database()
+    apply_schema(dsn)
+    execute(dsn, """INSERT INTO model_prices(model,input_usd_per_mtok,output_usd_per_mtok)
+        VALUES ('gpt-4o-mini-2026-11-01',2,4)""")
+    execute(dsn, """INSERT INTO traces(model,status_code,prompt_tokens,completion_tokens,
+        judge_model,judge_prompt_tokens,judge_completion_tokens)
+        VALUES ('gpt-4o-mini-2026-11-01',200,1000,1000,'missing-judge',10,10)""")
+    [row] = fetch(dsn, "SELECT cost_usd,judge_cost_usd,judge_unpriced,usage_missing FROM traces_enriched")
+    assert float(row["cost_usd"]) == 0.006
+    assert row["judge_cost_usd"] is None and row["judge_unpriced"] and not row["usage_missing"]
+    [summary] = fetch(dsn, "SELECT unpriced_judge_traces,missing_usage_traces FROM trace_summary")
+    assert summary["unpriced_judge_traces"] == 1 and summary["missing_usage_traces"] == 0
+
+
+def test_unknown_judge_usage_is_explicit_in_cost_views(make_database):
+    dsn = make_database()
+    apply_schema(dsn)
+    execute(dsn, """INSERT INTO traces(model,status_code,judge_model,eval_status)
+        VALUES ('gpt-4o-mini',200,'gpt-4o-mini','failed')""")
+    [row] = fetch(dsn, "SELECT judge_cost_usd,judge_usage_missing FROM traces_enriched")
+    assert row["judge_cost_usd"] is None and row["judge_usage_missing"]
+    [summary] = fetch(dsn, "SELECT missing_judge_usage_traces FROM trace_summary")
+    assert summary["missing_judge_usage_traces"] == 1
+
+
+def test_concurrent_migrators_are_serialized_and_version_is_recorded_once(make_database):
+    dsn = make_database()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(apply_schema, [dsn, dsn]))
+    assert fetch(dsn, "SELECT count(*) AS n FROM schema_migrations")[0]["n"] == 1
+    assert {"event_id", "agent_id", "eval_lease_token", "eval_cohort", "ingested_at"} <= columns(dsn)
