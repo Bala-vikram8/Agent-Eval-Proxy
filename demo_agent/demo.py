@@ -52,6 +52,22 @@ def lookup_account(query: str) -> str:
                        "note": "duplicate service fee of $12.50"})
 
 
+def execute_tool(name: str, arguments: str) -> str:
+    """Allowlisted synthetic tool dispatch; model output is untrusted input."""
+    if name != "lookup_account":
+        return json.dumps({"error": "unsupported_tool"})
+    if not isinstance(arguments, str) or len(arguments.encode()) > 4096:
+        return json.dumps({"error": "invalid_tool_arguments"})
+    try:
+        parsed = json.loads(arguments)
+    except (ValueError, TypeError, RecursionError):
+        return json.dumps({"error": "invalid_tool_arguments"})
+    if (not isinstance(parsed, dict) or set(parsed) != {"query"}
+            or not isinstance(parsed["query"], str) or not 1 <= len(parsed["query"]) <= 256):
+        return json.dumps({"error": "invalid_tool_arguments"})
+    return lookup_account(parsed["query"])
+
+
 def triage(state: State) -> State:
     result = client.chat.completions.create(model=MODEL, messages=[
         {"role": "system", "content": "You are a support triage agent. Classify the ticket as urgent, "
@@ -79,9 +95,8 @@ def investigate(state: State) -> State:
         for call in message.tool_calls
     ]})
     for call in message.tool_calls:
-        arguments = json.loads(call.function.arguments or "{}")
         messages.append({"role": "tool", "tool_call_id": call.id,
-                         "content": lookup_account(str(arguments.get("query", "")))})
+                         "content": execute_tool(call.function.name, call.function.arguments)})
     final = client.chat.completions.create(model=MODEL, messages=messages, tools=[LOOKUP_TOOL])
     return {"findings": final.choices[0].message.content or ""}
 
