@@ -1,69 +1,45 @@
-# Design notes
+# Architecture and tradeoffs
 
-Why the code is shaped the way it is, what each choice costs, and what I would change next.
+The original gateway, Postgres evaluation queue and Streamlit interface are retained. The audit found repairable defects; replacing the application or adding Kubernetes would not address them.
 
 ## Request path
 
-1. The agent calls `http://localhost:8000/v1/...` with any OpenAI client. Only the base URL changes.
-2. If `PROXY_API_KEY` is set, the caller must present it. The proxy then sets the upstream `Authorization` header (rules below) and forwards the request with its query string. Connection level headers are dropped, and the body is untouched except for one flag on streamed requests, explained below.
-3. Anything that is not `POST /v1/chat/completions` is forwarded and never recorded.
-4. A chat completion is timed from the moment it is sent upstream. For a normal response the proxy reads the body, returns it, and queues a trace. For a stream it relays each server sent event as soon as the event is complete, and queues the trace when the stream ends or the caller disconnects.
+Authentication and process-local admission happen before reading a bounded body or contacting the configured provider. Secure mode limits enabled endpoint/method pairs. The proxy strips hop-by-hop and client credential headers, creates a trace event ID, forwards with a separate provider credential, and preserves ordinary completion/stream behavior. Proxy-only evaluation metadata is removed before forwarding.
 
-## Streaming
+An agent label is operational metadata, not customer identity. This release supports one organization per isolated deployment. A tenant column without authorization at every database and queue boundary would not create safe multi-tenancy.
 
-* Usage only arrives in a stream when the request sets `stream_options.include_usage`. The proxy adds that flag so it can record token counts. If the caller did not ask for it, the extra final chunk (empty `choices`, filled `usage`) is removed before the caller sees it, because code that reads `chunk.choices[0]` would crash on it.
-* `streaming.StreamAccumulator` splits the byte stream into events, which can arrive split across reads, and rebuilds the final message, including tool calls whose arguments arrive in pieces.
-* Time to first token is measured at the first content or tool call delta, not at the first byte, because the first chunk usually carries only the role.
-* If the caller hangs up, the generator is cancelled. The trace is queued first and the upstream connection is then closed inside a shielded cancel scope, so a disconnect still produces a trace marked `stream_completed: false`.
+## Trace acceptance and durability
 
-## Logging stays off the request path
+Metadata minimization or explicitly enabled redaction happens before a trace reaches disk, broker or database. A non-streamed response acknowledges trace delivery only after queue acceptance. Database availability is decoupled from acceptance. Publication failure is explicit even if the provider already executed the request.
 
-* Traces are written by `store.TraceStore`, a thread pool with one Postgres connection per thread. The event loop only hands over a dict.
-* Observability must not take the application down. If Postgres is unreachable the write is dropped with a warning and requests keep flowing. There is a test for exactly this.
-* The cost of that choice: a trace still in the queue is lost if the proxy is killed. A durable local buffer would fix it.
-* The earlier version of this proxy opened a new HTTP client and wrote to Postgres synchronously inside the async handler. Under 50 concurrent clients with a 100 ms upstream on a 2 vCPU VM it managed 17 requests per second with a p50 near 3 seconds. The current version, measured the same way, did about 100 requests per second (median of three runs). See the README for the reproducible numbers.
+SQLite WAL with full synchronization is a bounded local durable spool on retained storage. It supports separate processes on one local filesystem; it is not a distributed queue or suitable for network filesystems. Pending and dead-letter payloads count toward capacity. Consumers claim with leases, retry with backoff and remove payloads only after a database commit. Expired leases recover work. Stable event IDs and a unique database index make redelivery idempotent at the sink.
 
-## Keys
+In cloud mode, SQS Standard provides replicated queue persistence, visibility leases and managed dead-letter redrive. Encryption, retention, backlog alarms and IAM are deployment requirements. Duplicates are expected, and depth observations are approximate. Admission based on those observations is a guardrail, not an exact distributed capacity guarantee.
 
-* `UPSTREAM_API_KEY` is used for the upstream when set.
-* `OPENAI_API_KEY` is only used when the upstream is `https://api.openai.com`, so pointing `UPSTREAM_BASE` at another server cannot leak it. The eval worker follows the same rule for the judge.
-* With no key configured, the caller's own `Authorization` header passes through.
-* Every published port binds to 127.0.0.1. Without that, a proxy that injects a key is an open relay billed to you.
+Provider execution and queue publication cannot share one transaction. A crash before finalization, especially during streaming, can leave provider activity without a finalized trace. Stream headers therefore say delivery is deferred. Monitor rejections and incomplete outcomes. This is not exactly-once model execution or lossless capture under arbitrary proxy termination.
 
-## Eval queue
+## Database and worker transactions
 
-* Every trace starts as `pending` and ends as `scored`, `skipped` or `failed`. Skipped and failed rows carry the reason in `eval_error`, so nothing silently disappears.
-* A worker claims one row at a time with `SELECT ... FOR UPDATE SKIP LOCKED` inside its own transaction. Several workers can share the queue, and a row that breaks the judge cannot roll back other rows.
-* Rows are skipped, not judged, when the upstream returned an error or the reply has no text, for example a turn that only calls a tool.
-* A judge error schedules a retry with exponential backoff (`JUDGE_RETRY_BASE_SECONDS`, default 30) and gives up after `JUDGE_MAX_ATTEMPTS` (default 3). An earlier version retried failures every 30 seconds forever, and a crash on tool call turns stopped every older trace from being scored.
-* To requeue failed rows after fixing the judge: `UPDATE traces SET eval_status = 'pending', eval_attempts = 0, eval_next_attempt_at = now() WHERE eval_status = 'failed';`
+Ingestion uses a small connection pool and bounded connection/query timeouts. Each insert commits before acknowledgement. A broker acknowledgement failure causes replay rather than a second trace row.
 
-## Judge
+Evaluation uses Postgres as its durable job store. A short transaction selects work with FOR UPDATE SKIP LOCKED, increments the attempt and commits a lease token/expiry. Deterministic evaluation and remote judging occur outside that transaction. Completion is fenced by the token and saved atomically with versioned history. An expired final attempt becomes terminal instead of resetting its retry count after every crash.
 
-* It measures answer relevance: does the reply address the last user request, given the system prompt. It does not check facts. The earlier versions called this faithfulness, which it never was, since the judge never saw any source material.
-* Temperature 0, JSON mode, and a parser that rejects missing or out of range scores, so a malformed verdict is an error, not a silent 0.5.
-* Inputs are truncated to 4,000 characters each to cap judge cost.
-* The judge's own token usage is stored and priced. Grading every call with an LLM can cost as much as the calls themselves, so the dashboard shows both.
-* Known weakness: the reply under test is inside the judge prompt, so a reply can try to steer the score. The prompt tells the judge that tagged text is data, which helps but is not a guarantee.
+This preserves the existing evaluation queue and avoids synchronizing two sources of job truth. A separate SQS evaluation queue is unnecessary at this scale; it could become useful if indexed queue scans constrain measured capacity.
 
-## Data model
+Schema changes run under an advisory lock and transaction. Legacy scores are preserved and exact model prices take priority over family fallbacks. A version ledger records migrations. Production rollout still needs coordinated migrations and backup; transactional DDL alone does not prove backward compatibility.
 
-* One `traces` table. Raw JSON (`messages`, `response`, `tool_calls`) sits next to typed columns for anything that gets aggregated.
-* Cost is never stored. `traces_enriched` joins token counts to `model_prices`, so a price correction fixes history, and an unknown model shows up as unpriced instead of being priced at somebody else's rate. Dated model ids such as `gpt-4o-mini-2024-07-18` fall back to their family price.
-* `trace_summary` and `model_summary` hold every aggregate the dashboard shows, using `percentile_cont` for p50 and p95. The dashboard itself only formats numbers.
-* `sql/init.sql` is idempotent and runs on every start through the `migrate` service. It upgrades databases created by the two earlier versions of this project: it renames the old faithfulness columns, converts `created_at` to `timestamptz`, keeps existing scores, and drops the stored cost column.
+## Evaluation trust and meaning
 
-## Performance limits
+The relevance judge returns an opinion about whether a reply addresses the request. Strict parsing rejects malformed verdicts but does not make the judge truthful or injection-proof. History includes evaluator/configuration versions, sampling and call parameters.
 
-* Sequential overhead is a few milliseconds (see the README table).
-* Under heavy concurrency on a small machine the proxy is CPU bound. Request and response bodies are parsed as JSON and every call passes through httpx and the ASGI stack in Python. Taking the database away did not raise throughput, so the trace writes are not the bottleneck.
-* Ways to scale: more uvicorn workers or replicas behind a load balancer, or a gateway in Go or Rust when throughput matters more than readability.
+Deterministic evaluators use recorded input and operator-owned references. A client selects a reference_id; it cannot declare its own answer trusted. Exact reference agreement, bounded schema validation and literal policy rules have narrow meanings. Lexical evidence coverage does not establish semantic groundedness. Missing evidence and unsupported checks produce skipped/insufficient-evidence outcomes.
 
-## What I would do next
+## Monitoring and investigation
 
-1. Retention: partition `traces` by month and drop or archive old partitions. Agents resend the whole history every turn, so `messages` grows fast.
-2. Redact secrets and personal data before storage.
-3. Grade faithfulness against tool results for turns that follow a tool call.
-4. Sample the judge (for example 10 percent of traffic) or use a batch API, to cut judge cost.
-5. Record the Responses API as well as chat completions.
-6. Export spans with the OpenTelemetry GenAI conventions, so traces can flow into existing observability tools.
+The dashboard authenticates before querying restricted views with parameterized filters. It distinguishes pending, processing, skipped, failed and scored relevance states; deterministic checks retain separate statuses/history. Unknown token counts/prices remain visible rather than appearing definitively free.
+
+The asynchronous monitor compares disjoint windows with matching agent, model, operator request cohort and evaluator/config versions. It requires sufficient samples, an absolute decline and a conservative one-sided bound. The result is candidate score deterioration to investigate. Request mix, judge changes and correlated conversation turns remain alternative explanations. This is not causal model-drift detection. Acknowledgement requires an explicit capability/credential separate from the read-only dashboard role.
+
+## Deployment boundary
+
+Compose is local synthetic development. The AWS proposal uses ECS Fargate, RDS, SQS, managed secrets, private networking, HTTPS and CloudWatch. Google Cloud, Azure and simpler container platforms are also possible. These files do not establish a provider account, deployment, production capacity, disaster-recovery outcome or regulated compliance.

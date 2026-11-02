@@ -1,151 +1,131 @@
-# AgentEval Proxy
+# Agent Eval Proxy
 
-[![CI](https://github.com/Bala-vikram8/Agent-Eval-Proxy/actions/workflows/ci.yml/badge.svg)](https://github.com/Bala-vikram8/Agent-Eval-Proxy/actions/workflows/ci.yml)
+An OpenAI-compatible gateway for tracing agent requests, asynchronous evaluations, and operational investigation. This project is being hardened from a working local demo into a deployable service. **It is not yet validated for production, sensitive customer data, or multiple independent customers.**
 
-A local, OpenAI-compatible proxy that forwards an agent's model requests and records best-effort traces for `POST /v1/chat/completions`, including streamed responses, in Postgres. A background worker evaluates **answer relevance** (whether a text reply addresses the user's request), not factual correctness. A Streamlit dashboard shows error rates, latency, time to first token, model costs, and evaluation results. To use the proxy, an OpenAI-compatible agent changes its base URL. **This is a local engineering demo, not a production-ready safety or monitoring service.**
+The [container security gate](docs/CONTAINER_SECURITY.md) remains blocked by unresolved upstream operating-system advisories. Local functional success does not clear that release gate.
 
-![AgentEval dashboard](screenshots/dashboard.png)
+The LLM judge measures **answer relevance**, not factual truth. Deterministic checks can compare an answer with an operator-supplied reference, validate tool arguments and structured output, and flag configured operational limits. Matching a reference does not prove the reference is correct. Lexical evidence coverage is an indicator, not groundedness or entailment verification.
 
-*The dashboard after one run of the offline demo. Offline mode uses a mock model and a stub judge, so the replies and scores in this picture are synthetic. The low relevance example is a canned off topic answer that the mock returns on purpose.*
-
-## How it works
+## Architecture
 
 ```mermaid
 flowchart LR
-    A[Agent] -->|OpenAI API calls| P[Proxy<br/>FastAPI]
-    P -->|forwarded| U[OpenAI or any<br/>compatible upstream]
-    P -.->|trace, after the response| DB[(Postgres)]
-    DB <-->|claim trace, save score| W[Eval worker]
-    W -->|grading prompt| J[LLM judge]
-    DB -->|SQL views| D[Streamlit dashboard]
+    A[Agent / OpenAI client] --> P[Authenticated FastAPI proxy]
+    P --> U[Configured model provider]
+    P --> M[Metadata minimization / optional redaction]
+    M --> Q[Bounded durable local spool / AWS SQS]
+    Q --> I[Ingestion worker]
+    I --> DB[(PostgreSQL)]
+    DB --> E[Leased asynchronous evaluators]
+    E --> J[Optional relevance judge]
+    E --> DB
+    DB --> W[Cohort monitoring worker]
+    W --> DB
+    DB --> D[Authenticated Streamlit dashboard]
 ```
 
-* **Proxy.** Forwards requests under `/v1/` and attempts to record each `POST /v1/chat/completions` call: messages, response, status, token counts, latency and, for streams, time to first token. Streams reach the caller event by event while the proxy reconstructs the reply, including tool calls. Trace writes run in a separate thread after a non-streamed response is read or a stream ends. If Postgres is unavailable, requests continue but traces may be lost.
-* **Eval worker.** Asynchronously grades answer relevance (does the text reply address the latest user request?) using a judge model at temperature 0 with JSON output. This does **not** establish that a reply is true, safe, or grounded in evidence. Persisted traces become `scored`, `skipped` with a reason (such as an upstream error or tool-only turn), or `failed` after three judge attempts with backoff. Workers claim rows with `FOR UPDATE SKIP LOCKED` so several can share the queue.
-* **Cost in SQL.** Cost is never stored. Views join token counts to a `model_prices` table, so fixing a price corrects history, and a model without a price shows as unpriced instead of being priced at the wrong rate. The judge's own spend is tracked the same way.
-* **Schema.** `sql/init.sql` is idempotent and runs on every start, so databases from earlier versions upgrade in place.
+The existing FastAPI/Postgres/Streamlit architecture is retained. Locally, a persistent SQLite WAL spool separates model traffic from database availability. A dedicated ingestion worker acknowledges events only after a committed, idempotent Postgres insert. AWS deployments can use SQS Standard and a managed dead-letter queue instead of local filesystem storage. Evaluation jobs remain a durable PostgreSQL queue: short claims and expiring leases avoid a second queue's synchronization cost. Remote model calls run outside database transactions.
 
-[docs/DESIGN.md](docs/DESIGN.md) explains each decision and its tradeoffs.
+## Current implementation
 
-## What this demo does and does not do
+- Proxy authentication, separate provider credentials, safe error categories and bounded request/response/stream/concurrency/rate handling. Limits are per process; distributed quotas require a gateway.
+- Metadata-only trace storage by default. Redacted capture is an explicit diagnostic option; arbitrary confidential prose cannot be automatically guaranteed safe.
+- Durable ingestion acceptance, stable event IDs, duplicate-safe insertion, exponential retries, dead letters, crash recovery, bounded shutdown and queue health signals.
+- Versioned evaluation history, deterministic checks, optional sampled relevance judging, operator-controlled references, finite attempts and poison-record handling.
+- Streamlit authentication; agent/model/date/status filters, trace inspection, evaluation history, incomplete cost indicators, queue/worker visibility and restricted alert acknowledgement.
+- Candidate deterioration alerts for matched agent/model/request-cohort/evaluator configurations, minimum sample sizes and a statistical bound. These alerts identify score changes to investigate; they do not establish model drift or causation.
+- Synthetic security, database, streaming, migration, retry, monitoring and evaluator tests, plus an offline end-to-end demo.
+- An optional AWS infrastructure proposal and deployment/recovery instructions. No cloud environment has been deployed or validated by this repository's local test results.
 
-* **After-the-fact evaluations:** The worker scores stored replies after the agent has already received them. It does not block an incorrect answer or prevent it from reaching a user.
-* **No automatic drift detection or alerts:** The dashboard exposes relevance scores and operational metrics for manual inspection, but it does not currently detect metric degradation over time or send notifications.
-* **Best-effort tracing:** Writes are submitted to an in-process thread pool, not a durable queue. A database outage or an abrupt proxy shutdown can permanently lose traces.
-* **Local and synthetic data only:** The demo uses a mock upstream and synthetic tickets. Actual messages and responses are stored without sensitive-data redaction, role-based access, or a retention policy. Do not use real patient information, dealership customer data, or other confidential data in this version; do not expose the local services to the public internet.
+## Run the offline stack
 
-## Quick start
-
-Offline, no API key needed. A mock upstream plays the model and the judge:
+Docker Compose with BuildKit is required. The override explicitly enables insecure **local synthetic** mode and redacted capture. All published ports bind to loopback.
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.offline.yml up --build -d
+docker compose -f docker-compose.yml -f docker-compose.offline.yml up --build -d --wait
 docker compose -f docker-compose.yml -f docker-compose.offline.yml --profile demo run --rm demo
 ```
 
-Against OpenAI:
+The stack starts Postgres, migrations and restricted runtime roles, the mock provider, proxy, ingestion worker, evaluation worker, dashboard and monitor. The demo generates synthetic support tickets and one intentional invalid-model error. Mock scores and token counts are synthetic. The dashboard listens on local port 8501 and the proxy on local port 8000. Stop services with `docker compose -f docker-compose.yml -f docker-compose.offline.yml down`; this preserves database and spool volumes.
+
+Do not expose the offline stack publicly. Do not use real provider keys, patient records, dealership customer information or confidential documents in this mode.
+
+## Development and tests
+
+Use Python 3.12 and a local Postgres 16 instance whose test role may create and drop temporary databases.
 
 ```bash
-cp .env.example .env            # then set OPENAI_API_KEY
-docker compose up --build -d
-docker compose --profile demo run --rm demo
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements-lock.txt
+export TEST_DATABASE_URL=postgresql://agenteval:agenteval@127.0.0.1:5432/agenteval
+pytest
+scripts/e2e_offline.sh
 ```
 
-Open the dashboard at http://localhost:8501. The demo is a small LangGraph support agent: for each of three tickets it classifies the ticket, may call a `lookup_account` tool, and streams a reply. It finishes with one request to a model that does not exist, so error tracking has something to show.
+The DSN above is the deliberately synthetic local Compose administrator. Application containers use separate restricted roles. Tests create databases with generated names and remove only those test databases. A skipped database suite is not successful validation.
 
-To trace your own agent, point its client at the proxy:
+For a repeatable simulated automotive service-workflow incident:
+
+```bash
+python examples/automotive_demo.py --samples 60 --output artifacts/automotive
+```
+
+This scenario creates a temporary loopback database and deterministic model fixture. A retrieval tool reads a fictional work-order routing document; a configuration fault produces an incorrect routing answer; reference evaluations and monitoring detect deterioration; restoring the configuration must pass regression assertions. This is a simulated integration, not evidence of any real dealership or company using the platform. See [the demonstration guide](docs/DEMO.md).
+
+Run `python bench/overhead.py` for measurements on your machine. Historical demo figures are not capacity promises for the hardened version. [Validation evidence](docs/VALIDATION.md) records the commands, actual results and remaining gaps for this implementation.
+
+## Configuration and operating boundaries
+
+| Setting | Purpose |
+|---|---|
+| `PROXY_API_KEY` | Strong deployment access credential; distinct from provider key |
+| `DASHBOARD_PASSWORD` | Independent strong dashboard credential; cloud SSO remains recommended |
+| `ALLOW_INSECURE_LOCAL` | Explicit `true` only for isolated synthetic development |
+| `UPSTREAM_BASE`, `UPSTREAM_API_KEY` | Fixed provider origin and its credential; deployment requires HTTPS |
+| `OPENAI_API_KEY` | Only used for the explicit official OpenAI origin |
+| `TRACE_CONTENT_MODE` | `metadata` default; `redacted` opt-in; no raw-content mode |
+| `TRACE_REDACT_PATTERNS` | Operator-configured patterns in the supported safe regex syntax |
+| `TRACE_QUEUE_BACKEND` | `sqlite` local persistent filesystem or `sqs` existing cloud queue |
+| `TRACE_SPOOL_PATH` | Retained local spool path; not a distributed filesystem |
+| `TRACE_INGEST_EMBEDDED` | Native development consumer; Compose uses a separate worker |
+| `TRACE_SQS_QUEUE_URL` | Pre-existing SQS queue with encryption, retention and DLQ configuration |
+| `TRACE_QUEUE_CAPACITY`, `TRACE_QUEUE_MAX_BYTES` | Local backlog limits; SQS gauges are approximate |
+| `JUDGE_BASE_URL`, `JUDGE_API_KEY`, `JUDGE_MODEL` | Relevance judge endpoint, credential and model |
+| `JUDGE_SAMPLE_RATE`, `JUDGE_MAX_TOKENS` | Stable judge sampling and per-call output limit; not a prepaid spend ceiling |
+| `EVAL_REFERENCE_CATALOG` | Operator-owned catalog resolving a caller's `reference_id` |
+| `RETENTION_DATABASE_URL`, `TRACE_RETENTION_DAYS` | Restricted maintenance configuration; deletion CLI defaults to dry-run |
+
+Use a separate deployment per organization. An `x-agent-id` label is a filter, not customer authorization. Never rely on labels or dashboard filters for tenant isolation.
+
+Client integration retains the familiar base-URL change:
 
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://localhost:8000/v1", api_key="unused")  # the proxy adds the real key
+client = OpenAI(
+    base_url="https://your-approved-private-proxy/v1",
+    api_key="read-from-your-secret-manager",
+    default_headers={"x-agent-id": "service-workflow"},
+)
 ```
 
-`make offline`, `make offline-demo`, `make up`, `make demo` and `make down` wrap these commands.
+For non-streamed responses, `x-trace-delivery: durable` means the ingestion queue accepted the trace, not that evaluation completed. A queue failure can return 503 after the provider already ran; repeating that request can incur another provider charge. Streams use `x-trace-delivery: deferred` because headers precede final capture. A proxy crash before stream finalization can lose that unfinished trace. Inspect trace rejection counters and incomplete outcomes; delivery is not atomic with model execution.
 
-## Configuration
+## Documentation
 
-Set these in `.env`. Every published port binds to 127.0.0.1.
+- [Audit, reproduction evidence and prioritized plan](docs/AUDIT.md)
+- [Architecture and tradeoffs](docs/DESIGN.md)
+- [Threat model and security limitations](docs/THREAT_MODEL.md)
+- [Container scan results and release blockers](docs/CONTAINER_SECURITY.md)
+- [Evaluation methodology](docs/EVALUATIONS.md)
+- [API and trace-delivery contract](docs/API.md)
+- [Deployment instructions](docs/DEPLOYMENT.md)
+- [AWS, Google Cloud, Azure and simpler staging choices](docs/PLATFORM_OPTIONS.md)
+- [Operations, recovery and rollback](docs/OPERATIONS.md)
+- [Simulated customer demonstration](docs/DEMO.md)
+- [Validation and measured results](docs/VALIDATION.md)
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `OPENAI_API_KEY` | | Used for api.openai.com only, by the proxy and the judge |
-| `UPSTREAM_BASE` | `https://api.openai.com` | Any OpenAI compatible server |
-| `UPSTREAM_API_KEY` | | Key for a non OpenAI upstream. With no key configured, callers' own keys pass through |
-| `PROXY_API_KEY` | | When set, callers must send it as their API key. The proxy swaps it for the upstream key |
-| `JUDGE_MODEL` | `gpt-4o-mini` | Judge model. It must support temperature 0 and JSON mode |
-| `JUDGE_BASE_URL`, `JUDGE_API_KEY` | | Point the judge at another server |
-| `DEMO_MODEL` | `gpt-4o-mini` | Model the demo agent uses |
-
-The schema ships a price for `gpt-4o-mini` only. Add every model you call, in USD per million tokens:
-
-```bash
-docker compose exec postgres psql -U agenteval -c \
-  "INSERT INTO model_prices (model, input_usd_per_mtok, output_usd_per_mtok) VALUES ('your-model', 1.00, 4.00)"
-```
-
-## Measured
-
-What the proxy adds, from `bench/overhead.py`: the mock upstream, the proxy, Postgres and the load generator all on one 2 vCPU Linux VM.
-
-| Scenario | Direct p50 / p95 | Through proxy p50 / p95 | Throughput direct / proxy |
-|---|---|---|---|
-| Sequential, upstream answers instantly | 1.1 / 1.5 ms | 3.6 / 6.4 ms | |
-| 50 concurrent clients, upstream takes 100 ms | 105 / 346 ms | 313 / 1,303 ms | 354 / 104 req/s |
-
-* One request at a time, the proxy adds about 2.5 ms at p50 and 5 ms at p95.
-* Under 50 concurrent clients this small VM runs out of CPU at about 100 requests per second through the proxy. The version of this proxy before the rewrite managed 17 requests per second with a p50 of 3 seconds in the same scenario, because it opened a new HTTP client and wrote to Postgres synchronously inside the event loop.
-* All 3,050 proxied requests in the benchmark were recorded.
-
-Numbers depend on the machine; rerun the script on yours.
-
-## Tests
-
-`pytest` runs 30 tests against a real Postgres, with the proxy and the mock upstream as separate processes: streaming that reaches the client incrementally, a client hanging up mid stream, streamed tool calls, auth and key handling, upstream and database outages, judge retries and the attempt cap, two workers sharing the queue, upgrades from both earlier schemas, and the dashboard rendered headlessly. CI also builds every Docker image and runs the offline demo end to end (`scripts/e2e_offline.sh`).
-
-```bash
-pip install -r requirements-dev.txt
-export TEST_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/postgres  # tests create and drop their own databases
-pytest
-python bench/overhead.py
-scripts/e2e_offline.sh
-```
-
-## Limitations
-
-* Only chat completions are recorded. The Responses API, embeddings and other endpoints pass through without a trace.
-* The judge measures relevance, **not factual accuracy, hallucinations, policy compliance, or source faithfulness**. Its score is not a safety guarantee.
-* The response being judged is part of the judge input and can attempt to manipulate the score.
-* No automated drift baselines, alerts, or user-facing quality gates are implemented.
-* Messages and responses are stored without redaction or a retention policy. Database and dashboard access controls are not implemented; published Docker ports bind to localhost for demo use.
-* In-process trace writes have no durability guarantee, bounded queue, or recovery mechanism if a database is down or the proxy stops unexpectedly.
-
-## Before deploying to the cloud
-
-This repository is **not ready for production traffic or sensitive customer data**. Planned engineering work, in priority order:
-
-1. **Privacy and access:** redact or minimize sensitive data before storage, implement retention and deletion, authenticate the dashboard and API, isolate customer data, and manage secrets and encryption.
-2. **Reliable trace ingestion:** use a bounded, durable queue with backpressure, retries, idempotent processing, and visibility into dropped or delayed traces.
-3. **Higher-quality evaluation:** add task-specific correctness and groundedness checks backed by references, realistic labeled test cases, prompt-injection resilience testing, and configurable evaluation sampling.
-4. **Operational monitoring:** add per-agent baselines and drift alerts, queue-depth and worker-health monitoring, structured logs and traces, and incident procedures.
-5. **Cloud delivery:** deploy containerized components with managed Postgres and a durable queue, private networking and least-privilege access, automated CI deployment, backup and recovery, load testing, and cost limits.
-
-All of these are future tasks, not features already implemented. Use synthetic test data during development.
-
-## Related tools
-
-For production use, [LiteLLM](https://docs.litellm.ai/), [Helicone](https://docs.helicone.ai/) and [Langfuse](https://langfuse.com/) cover far more providers and features. This project is a small, readable implementation of the same gateway pattern, built to show how the pieces fit: a streaming relay, logging kept off the request path, an evaluation queue in Postgres, and cost derived in SQL.
-
-## Layout
-
-| Path | What it is |
-|---|---|
-| `proxy/` | FastAPI proxy: `main.py` request path, `streaming.py` stream parser, `store.py` trace writer |
-| `eval/eval_engine.py` | Judge worker |
-| `dashboard/app.py` | Streamlit dashboard |
-| `sql/init.sql` | Schema, upgrades, prices and views |
-| `demo_agent/demo.py` | LangGraph support agent that generates traffic |
-| `mock_upstream/server.py` | Offline stand in for the OpenAI API, used by the demo, tests and benchmark |
-| `tests/`, `bench/`, `scripts/` | Test suite, overhead benchmark, Docker end to end check |
+Production acceptance additionally requires an approved deployment scope, real cloud identity/TLS/network checks, provider calibration, load capacity, verified backup restoration and operational ownership. Infrastructure files and passing local tests do not satisfy those gates. No HIPAA or other regulatory compliance is claimed.
 
 MIT License.

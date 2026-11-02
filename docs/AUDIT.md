@@ -49,3 +49,20 @@ No current SQL injection or XSS was confirmed: SQL uses parameterization/static 
 5. **Evidence and simulated integration:** run reproducible synthetic scenario, measured load and failure recovery; publish actual results with scope/limitations, threat model, operator/runbook and rollback/restore instructions.
 
 Initial implementation scope is **one organization per isolated deployment**. Multi-customer tenancy is not enabled or claimed. Default working assumption is private AWS staging; user scope/budget clarification is pending and does not block local work. Production readiness additionally requires approved deployment scope, verified cloud identity/TLS/networking, operational ownership, real-provider calibration, measured capacity and successful recovery exercises. Passing local tests alone cannot satisfy that gate.
+
+## Findings during implementation validation
+
+These were discovered after the baseline review and are separate from historical CI success.
+
+| Severity | Verified evidence | Repair and verification |
+|---|---|---|
+| High | The judge SDK could honor ambient `OPENAI_BASE_URL` while selecting the official provider credential. | Explicit validated judge origin and disabled redirects; credential-route regression. |
+| High | Arbitrary Python redaction regexes could backtrack catastrophically on captured text. | Linear-time RE2 patterns, fail-closed unsupported syntax, input/output budgets and adversarial regression. |
+| Medium | Initial dependency audit found advisories in bundled pip 25.0.1. | Updated all environment/image requirement sets to patched pip 26.2; subsequent installed-environment PyPI audit reported no known vulnerabilities. This is a time-bound scan, not a guarantee. |
+| High | A 50-client local load produced 31 post-provider trace publication failures; a diagnostic rerun identified SQLite BUSY. All durably acknowledged events reached Postgres. | Serialize short in-process SQLite operations with a bounded lock; preserve filesystem synchronization, cross-process leases and capacity bounds; rerun identical offered load and retain failed evidence. |
+| Medium | Docker E2E observed migration TCP connection refusal after the Postgres health check accepted its temporary initialization server. | Require a real TCP database query in health checks, then rerun from a fresh isolated volume. |
+| Medium | Managed-style non-superuser database administrators cannot execute some forced role-attribute changes used by local superuser bootstrapping. | Assert pre-existing roles have no privileged attributes and refuse unsafe roles; verify bootstrap/grants under a non-superuser database owner with role-management capability. |
+| Medium | Default Uvicorn access logs record sensitive query strings outside trace redaction. | Disable request-target access logs in deployed proxy commands; retain structured safe counters/logs. External edge/provider logs still need their own privacy policy. |
+| Medium | SQS zero-second polling would override the infrastructure's long-poll setting and cause unnecessary idle API traffic. | Configurable 20-second long polling with separate bounded control/poll SDK timeouts; mocked request and shutdown regressions. |
+
+The user clarified that no AWS account exists yet and requested alternative platforms and budget guidance. Cloud work therefore remains an undeployed proposal; deployment choices and provisional planning allowances are documented separately. No paid resources or public endpoints have been created.
