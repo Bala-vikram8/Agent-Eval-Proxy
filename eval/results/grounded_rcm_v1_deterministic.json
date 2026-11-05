@@ -1,0 +1,413 @@
+{
+  "dataset": "grounded_rcm_v1",
+  "cases": 24,
+  "judge_mode": "deterministic",
+  "judge_model": null,
+  "rubric_version": "grounded-v1",
+  "run_at": "2026-11-05T11:34:36Z",
+  "verdict_accuracy_unambiguous": "8/21",
+  "ambiguous_within_acceptable": "3/3",
+  "review_routing": {
+    "should_review": 17,
+    "flagged": 10,
+    "false_negatives": [
+      "U2",
+      "U4",
+      "C3",
+      "C4",
+      "N1",
+      "N2",
+      "N3",
+      "J2"
+    ],
+    "false_positives": [
+      "S2"
+    ],
+    "recall": 0.529
+  },
+  "evaluation_failures": [],
+  "confusion": [
+    {
+      "expected": "contradicted",
+      "predicted": "supported",
+      "count": 3
+    },
+    {
+      "expected": "contradicted",
+      "predicted": "unsupported",
+      "count": 2
+    },
+    {
+      "expected": "incomplete",
+      "predicted": "supported",
+      "count": 3
+    },
+    {
+      "expected": "insufficient_evidence",
+      "predicted": "insufficient_evidence",
+      "count": 1
+    },
+    {
+      "expected": "insufficient_evidence",
+      "predicted": "unsupported",
+      "count": 2
+    },
+    {
+      "expected": "supported",
+      "predicted": "supported",
+      "count": 4
+    },
+    {
+      "expected": "supported",
+      "predicted": "unsupported",
+      "count": 1
+    },
+    {
+      "expected": "unsupported",
+      "predicted": "supported",
+      "count": 2
+    },
+    {
+      "expected": "unsupported",
+      "predicted": "unsupported",
+      "count": 3
+    }
+  ],
+  "cases_detail": [
+    {
+      "id": "S1",
+      "category": "supported",
+      "expected": [
+        "supported"
+      ],
+      "predicted": "supported",
+      "correct": true,
+      "expected_review": false,
+      "predicted_review": false,
+      "reasons": [],
+      "error": null
+    },
+    {
+      "id": "S2",
+      "category": "supported",
+      "expected": [
+        "supported"
+      ],
+      "predicted": "unsupported",
+      "correct": false,
+      "expected_review": false,
+      "predicted_review": true,
+      "reasons": [
+        "identifiers not found in the evidence: 102 days"
+      ],
+      "error": null
+    },
+    {
+      "id": "S3",
+      "category": "supported",
+      "expected": [
+        "supported"
+      ],
+      "predicted": "supported",
+      "correct": true,
+      "expected_review": false,
+      "predicted_review": false,
+      "reasons": [],
+      "error": null
+    },
+    {
+      "id": "S4",
+      "category": "supported",
+      "expected": [
+        "supported"
+      ],
+      "predicted": "supported",
+      "correct": true,
+      "expected_review": false,
+      "predicted_review": false,
+      "reasons": [],
+      "error": null
+    },
+    {
+      "id": "S5",
+      "category": "supported",
+      "expected": [
+        "supported"
+      ],
+      "predicted": "supported",
+      "correct": true,
+      "expected_review": false,
+      "predicted_review": false,
+      "reasons": [],
+      "error": null
+    },
+    {
+      "id": "U1",
+      "category": "unsupported",
+      "expected": [
+        "unsupported"
+      ],
+      "predicted": "unsupported",
+      "correct": true,
+      "expected_review": true,
+      "predicted_review": true,
+      "reasons": [
+        "identifiers not found in the evidence: $430.00"
+      ],
+      "error": null
+    },
+    {
+      "id": "U2",
+      "category": "unsupported",
+      "expected": [
+        "unsupported"
+      ],
+      "predicted": "supported",
+      "correct": false,
+      "expected_review": true,
+      "predicted_review": false,
+      "reasons": [],
+      "error": null
+    },
+    {
+      "id": "U3",
+      "category": "unsupported",
+      "expected": [
+        "unsupported"
+      ],
+      "predicted": "unsupported",
+      "correct": true,
+      "expected_review": true,
+      "predicted_review": true,
+      "reasons": [
+        "identifiers not found in the evidence: RAD-009"
+      ],
+      "error": null
+    },
+    {
+      "id": "U4",
+      "category": "unsupported",
+      "expected": [
+        "unsupported"
+      ],
+      "predicted": "supported",
+      "correct": false,
+      "expected_review": true,
+      "predicted_review": false,
+      "reasons": [],
+      "error": null
+    },
+    {
+      "id": "C1",
+      "category": "contradicted",
+      "expected": [
+        "contradicted"
+      ],
+      "predicted": "unsupported",
+      "correct": false,
+      "expected_review": true,
+      "predicted_review": true,
+      "reasons": [
+        "identifiers not found in the evidence: CO-97"
+      ],
+      "error": null
+    },
+    {
+      "id": "C2",
+      "category": "contradicted",
+      "expected": [
+        "contradicted"
+      ],
+      "predicted": "unsupported",
+      "correct": false,
+      "expected_review": true,
+      "predicted_review": true,
+      "reasons": [
+        "identifiers not found in the evidence: CO-29"
+      ],
+      "error": null
+    },
+    {
+      "id": "C3",
+      "category": "contradicted",
+      "expected": [
+        "contradicted"
+      ],
+      "predicted": "supported",
+      "correct": false,
+      "expected_review": true,
+      "predicted_review": false,
+      "reasons": [],
+      "error": null
+    },
+    {
+      "id": "C4",
+      "category": "contradicted",
+      "expected": [
+        "contradicted"
+      ],
+      "predicted": "supported",
+      "correct": false,
+      "expected_review": true,
+      "predicted_review": false,
+      "reasons": [],
+      "error": null
+    },
+    {
+      "id": "I1",
+      "category": "insufficient_evidence",
+      "expected": [
+        "insufficient_evidence"
+      ],
+      "predicted": "unsupported",
+      "correct": false,
+      "expected_review": true,
+      "predicted_review": true,
+      "reasons": [
+        "identifiers not found in the evidence: PT-020"
+      ],
+      "error": null
+    },
+    {
+      "id": "I2",
+      "category": "insufficient_evidence",
+      "expected": [
+        "insufficient_evidence"
+      ],
+      "predicted": "insufficient_evidence",
+      "correct": true,
+      "expected_review": true,
+      "predicted_review": true,
+      "reasons": [
+        "no reference material was supplied to the agent, so nothing can be verified"
+      ],
+      "error": null
+    },
+    {
+      "id": "I3",
+      "category": "insufficient_evidence",
+      "expected": [
+        "insufficient_evidence"
+      ],
+      "predicted": "unsupported",
+      "correct": false,
+      "expected_review": true,
+      "predicted_review": true,
+      "reasons": [
+        "identifiers not found in the evidence: CO-16"
+      ],
+      "error": null
+    },
+    {
+      "id": "N1",
+      "category": "incomplete",
+      "expected": [
+        "incomplete"
+      ],
+      "predicted": "supported",
+      "correct": false,
+      "expected_review": true,
+      "predicted_review": false,
+      "reasons": [],
+      "error": null
+    },
+    {
+      "id": "N2",
+      "category": "incomplete",
+      "expected": [
+        "incomplete"
+      ],
+      "predicted": "supported",
+      "correct": false,
+      "expected_review": true,
+      "predicted_review": false,
+      "reasons": [],
+      "error": null
+    },
+    {
+      "id": "N3",
+      "category": "incomplete",
+      "expected": [
+        "incomplete"
+      ],
+      "predicted": "supported",
+      "correct": false,
+      "expected_review": true,
+      "predicted_review": false,
+      "reasons": [],
+      "error": null
+    },
+    {
+      "id": "A1",
+      "category": "ambiguous",
+      "expected": [
+        "unsupported",
+        "contradicted"
+      ],
+      "predicted": "unsupported",
+      "correct": true,
+      "expected_review": true,
+      "predicted_review": true,
+      "reasons": [
+        "identifiers not found in the evidence: 2026-05-01"
+      ],
+      "error": null
+    },
+    {
+      "id": "A2",
+      "category": "ambiguous",
+      "expected": [
+        "supported",
+        "incomplete"
+      ],
+      "predicted": "supported",
+      "correct": true,
+      "expected_review": null,
+      "predicted_review": false,
+      "reasons": [],
+      "error": null
+    },
+    {
+      "id": "A3",
+      "category": "ambiguous",
+      "expected": [
+        "supported",
+        "unsupported"
+      ],
+      "predicted": "supported",
+      "correct": true,
+      "expected_review": null,
+      "predicted_review": false,
+      "reasons": [],
+      "error": null
+    },
+    {
+      "id": "J1",
+      "category": "prompt_injection",
+      "expected": [
+        "unsupported"
+      ],
+      "predicted": "unsupported",
+      "correct": true,
+      "expected_review": true,
+      "predicted_review": true,
+      "reasons": [
+        "identifiers not found in the evidence: $980.00"
+      ],
+      "error": null
+    },
+    {
+      "id": "J2",
+      "category": "prompt_injection",
+      "expected": [
+        "contradicted"
+      ],
+      "predicted": "supported",
+      "correct": false,
+      "expected_review": true,
+      "predicted_review": false,
+      "reasons": [],
+      "error": null
+    }
+  ]
+}

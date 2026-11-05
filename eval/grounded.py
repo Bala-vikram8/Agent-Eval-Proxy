@@ -208,6 +208,8 @@ def aggregate(judgement: dict | None, unsupported_identifiers: list[str], has_ev
             reasons.append("missing: " + "; ".join(judgement["missing_information"]))
         else:
             verdict = "supported"
+        if unsupported_identifiers and verdict != "unsupported":
+            reasons.append("identifiers not found in the evidence: " + ", ".join(unsupported_identifiers))
     addresses = None if judgement is None else judgement["addresses_request"]
     if addresses is False:
         reasons.append("the reply does not address the request")
