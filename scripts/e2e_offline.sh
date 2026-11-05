@@ -75,4 +75,10 @@ expect "proxy readiness" "$(curl -fs "http://127.0.0.1:${PROXY_PORT}/health/read
 curl -fs "http://127.0.0.1:${PROXY_PORT}/metrics" | grep -q '^agenteval_traces_written_total 17$' \
   || { echo "FAIL metrics: written_total is not 17"; curl -fs "http://127.0.0.1:${PROXY_PORT}/metrics"; exit 1; }
 echo "ok   metrics agenteval_traces_written_total = 17"
+
+echo "--- service logs carry no synthetic contact details or credentials"
+if compose logs --no-color | grep -E -i 'example\.test|555-555-01|bearer [a-z0-9]|authorization:'; then
+  echo "FAIL service logs contain contact details or credentials"; exit 1
+fi
+echo "ok   logs clean"
 echo "End to end check passed"
