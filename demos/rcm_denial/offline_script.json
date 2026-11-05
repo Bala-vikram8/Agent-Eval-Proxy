@@ -1,0 +1,25 @@
+[
+  {"when": {"system_contains": "denial investigation assistant", "user_contains": "CLM-24-10031", "tool_results": 0},
+   "reply": {"tool_calls": [
+     {"name": "get_claim", "arguments": {"claim_id": "CLM-24-10031"}},
+     {"name": "get_remittance", "arguments": {"claim_id": "CLM-24-10031"}},
+     {"name": "get_payer_policy", "arguments": {"payer_id": "NWH", "cpt": "72148"}}]}},
+  {"when": {"system_contains": "denial investigation assistant", "user_contains": "CLM-24-10031", "tool_results": 3},
+   "reply": {"content": "Claim CLM-24-10031 was denied with CO-197 because the authorization was absent from the claim. Authorization AUTH-55821 was obtained on 2026-02-27, before the 2026-03-04 date of service. Policy NWH-RAD-004 version 3 allows a corrected claim that includes the authorization number within 90 days of the denial. Next action: submit a corrected claim with authorization AUTH-55821."}},
+
+  {"when": {"system_contains": "denial investigation assistant", "user_contains": "CLM-24-10047", "tool_results": 0},
+   "reply": {"tool_calls": [
+     {"name": "get_claim", "arguments": {"claim_id": "CLM-24-10047"}},
+     {"name": "get_remittance", "arguments": {"claim_id": "CLM-24-10047"}},
+     {"name": "get_payer_policy", "arguments": {"payer_id": "NWH", "cpt": "99214"}}]}},
+  {"when": {"system_contains": "denial investigation assistant", "user_contains": "CLM-24-10047", "tool_results": 3},
+   "reply": {"content": "Claim CLM-24-10047 was denied with CO-29 for timely filing. The claim was submitted within the 180-day timely filing limit, so the denial is a payer error. Next action: appeal and ask Northwind to reprocess the claim and pay the contracted rate of $430.00."}},
+
+  {"when": {"system_contains": "denial investigation assistant", "user_contains": "CLM-24-10052", "tool_results": 0},
+   "reply": {"tool_calls": [
+     {"name": "get_claim", "arguments": {"claim_id": "CLM-24-10052"}},
+     {"name": "get_remittance", "arguments": {"claim_id": "CLM-24-10052"}},
+     {"name": "get_payer_policy", "arguments": {"payer_id": "NWH", "cpt": "97110"}}]}},
+  {"when": {"system_contains": "denial investigation assistant", "user_contains": "CLM-24-10052", "tool_results": 3},
+   "reply": {"content": "Claim CLM-24-10052 was denied with CO-50 for medical necessity. Policy NWH-PT-020 covers up to 30 therapy visits per year, so this visit should be covered. Next action: appeal with a letter of medical necessity."}}
+]
