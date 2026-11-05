@@ -42,10 +42,19 @@ app = FastAPI(title="Mock OpenAI upstream")
 seen_authorization: list[str | None] = []
 
 
+seen_header_names: list[list[str]] = []
+
+
 @app.get("/mock/seen-authorization")
 async def seen():
     """Lets tests check which key the proxy forwarded."""
     return {"authorization": seen_authorization[-50:]}
+
+
+@app.get("/mock/seen-headers")
+async def seen_headers():
+    """Header names of recent chat requests, so tests can check what the proxy forwarded."""
+    return {"headers": seen_header_names[-50:]}
 
 
 @app.get("/v1/models")
@@ -56,6 +65,7 @@ async def models():
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
     seen_authorization.append(request.headers.get("authorization"))
+    seen_header_names.append(sorted(request.headers.keys()))
     body = await request.json()
     model = body.get("model")
     messages = body.get("messages") or []
