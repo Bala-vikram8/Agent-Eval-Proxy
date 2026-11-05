@@ -40,7 +40,8 @@ def wait_until_up(url: str, proc: subprocess.Popen, timeout: float = 20) -> None
 
 # Settings each test passes explicitly, never inherited from the developer's shell.
 CONTROLLED_ENV = {"OPENAI_API_KEY", "UPSTREAM_API_KEY", "UPSTREAM_BASE", "PROXY_API_KEY", "DATABASE_URL",
-                  "JUDGE_API_KEY", "JUDGE_BASE_URL", "JUDGE_MODEL"}
+                  "JUDGE_API_KEY", "JUDGE_BASE_URL", "JUDGE_MODEL", "TRACE_SPOOL_PATH", "REDACT_PII",
+                  "MOCK_SCRIPT_PATH", "UPSTREAM_TIMEOUT_SECONDS", "TRACE_SPOOL_MAX_ROWS"}
 
 
 @contextlib.contextmanager
@@ -111,7 +112,7 @@ def db(database):
     with contextlib.closing(psycopg2.connect(database)) as conn:
         conn.autocommit = True
         with conn.cursor() as cur:
-            cur.execute("TRUNCATE traces RESTART IDENTITY")
+            cur.execute("TRUNCATE traces, worker_heartbeats RESTART IDENTITY CASCADE")
     return database
 
 
@@ -139,12 +140,14 @@ def mock_upstream() -> str:
 
 
 @pytest.fixture(scope="session")
-def start_proxy():
-    """Factory: start a proxy with the given environment, stopped at session end."""
+def start_proxy(tmp_path_factory):
+    """Factory: start a proxy with the given environment, stopped at session end. Each proxy
+    gets its own trace spool file unless TRACE_SPOOL_PATH is passed."""
     stack = contextlib.ExitStack()
 
     def start(**env) -> str:
         env = {k: v for k, v in env.items() if v is not None}
+        env.setdefault("TRACE_SPOOL_PATH", str(tmp_path_factory.mktemp("spool") / "spool.db"))
         return stack.enter_context(run_server("proxy", "main:app", free_port(), env, "/health"))
 
     with stack:

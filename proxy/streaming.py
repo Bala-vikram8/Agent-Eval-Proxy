@@ -60,10 +60,10 @@ class StreamAccumulator:
         if not choices and chunk.get("usage") and self.hide_usage_chunk:
             return False
 
-        for choice in choices:
-            if choice.get("index", 0) != 0:
+        for choice in choices if isinstance(choices, list) else []:
+            if not isinstance(choice, dict) or choice.get("index", 0) != 0:
                 continue  # only the first choice is recorded
-            delta = choice.get("delta") or {}
+            delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else {}
             if delta.get("content"):
                 self._mark_first_token(now)
                 self._content.append(delta["content"])

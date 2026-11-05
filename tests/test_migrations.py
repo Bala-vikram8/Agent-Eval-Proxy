@@ -1,6 +1,8 @@
 """The schema file must be safe to rerun and must upgrade databases from earlier versions."""
 import contextlib
 import sys
+import tempfile
+import time
 import uuid
 
 import psycopg2
@@ -27,10 +29,11 @@ def columns(dsn) -> set[str]:
 def proxy_can_write(dsn) -> bool:
     """Insert one trace exactly the way the proxy does."""
     marker = uuid.uuid4().hex
-    store = TraceStore(dsn, workers=1)
-    store.submit({"request_id": marker, "model": "gpt-4o-mini", "messages": [], "response": {},
-                  "status_code": 200, "streamed": False})
-    store.close()  # waits for the queued write
+    with tempfile.TemporaryDirectory() as tmp:
+        store = TraceStore(dsn, f"{tmp}/spool.db")
+        store.submit({"trace_id": marker, "request_id": marker, "model": "gpt-4o-mini", "messages": [],
+                      "response": {}, "status_code": 200, "streamed": False, "created_at": time.time()})
+        store.close()  # drains the spool
     return fetch(dsn, "SELECT count(*) AS n FROM traces WHERE request_id = %s", (marker,))[0]["n"] == 1
 
 
