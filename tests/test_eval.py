@@ -95,7 +95,8 @@ def test_workers_never_claim_the_same_row(engine, judge, conn, db):
     second = add_trace(db, reply="Settings, then Profile, then Change picture.")
     with contextlib.closing(psycopg2.connect(db)) as other:
         with other.cursor() as cur:
-            cur.execute(engine.CLAIM_SQL)  # worker A holds a lock on the first row
+            # Worker A is inside its claim transaction and holds the row lock on the first row.
+            cur.execute(engine.CLAIM_SQL, {"lease": 60, "token": "worker-a"})
             assert cur.fetchone()[0] == first
             assert engine.process_one(conn, judge)  # worker B skips it
             other.rollback()
