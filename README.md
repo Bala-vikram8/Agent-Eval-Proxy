@@ -122,7 +122,7 @@ Verified by tests and drills in this repository:
 * The spool is bounded (`TRACE_SPOOL_MAX_ROWS`, default 50,000). When it is full, new traces are dropped and counted, requests keep working, and `/health/ready` returns 503.
 * A row Postgres rejects goes to `dead_letter` after 3 attempts instead of blocking the batch.
 * Eval workers hold a lease, not a database lock, while they wait on the judge. A worker that crashes loses its lease and the row is retried. A worker that resumes after its lease expired cannot overwrite the new owner's result.
-* Upstream timeouts return 504. An upstream that fails mid stream produces an SSE error event for the caller and a trace with `error_type`.
+* Upstream timeouts return 504. An upstream that fails mid stream ends with a final event carrying an `error` object, which the OpenAI SDKs raise on, and a trace with `error_type`.
 
 Not covered: losing the spool volume itself, running several proxy replicas against one spool, and disk full on the spool volume.
 
@@ -181,9 +181,9 @@ All 3,050 proxied requests were recorded. The durable spool costs about 1 to 2 m
 
 | File | Tests | Covers |
 |---|---|---|
-| `test_reliability.py` | 23 | Spool durability, Postgres outage through a TCP relay, restart recovery, idempotency, dead letters, bounds, leases, stale workers, timeouts, mid stream failure, health, metrics |
+| `test_reliability.py` | 23 | Spool durability, Postgres outage through a TCP relay, process termination, idempotency, dead letters, bounds, concurrent streams, timeouts, mid stream failure, header handling, redaction, health, metrics |
 | `test_grounded.py` | 29 | Identifier canonicalization, verdict order, judge parsing, dataset checks |
-| `test_eval.py` | 16 | Relevance worker, retries and attempt cap, tool call turns, judge token accounting |
+| `test_eval.py` | 16 | Relevance worker, retries and attempt cap, leases and stale workers, poison rows, no open transaction during the judge call, judge token accounting, injection, retention |
 | `test_proxy.py` | 11 | Forwarding, auth and key rules, streaming, model attribution |
 | `test_reviews.py` | 9 | State machine, stale versions, duplicate prevention, append only audit |
 | `test_dashboard.py` | 7 | Headless render, numbers checked against independent SQL, review form, password gate |
