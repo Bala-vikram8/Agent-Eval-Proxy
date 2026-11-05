@@ -47,8 +47,14 @@ services:
       UPSTREAM_API_KEY: ${UPSTREAM_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       PROXY_API_KEY: ${PROXY_API_KEY:-}
+      REDACT_PII: ${REDACT_PII:-true}
+      TRACE_SPOOL_PATH: /var/lib/agenteval/spool.db
+    volumes:
+      - proxy_spool:/var/lib/agenteval
+    # Gives the trace spool time to drain on docker compose stop.
+    stop_grace_period: 15s
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready')"]
       interval: 2s
       timeout: 5s
       retries: 30
@@ -65,6 +71,7 @@ services:
       JUDGE_API_KEY: ${JUDGE_API_KEY:-}
       JUDGE_BASE_URL: ${JUDGE_BASE_URL:-}
       JUDGE_MODEL: ${JUDGE_MODEL:-gpt-4o-mini}
+      RETENTION_DAYS: ${RETENTION_DAYS:-0}
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -76,6 +83,8 @@ services:
       - "127.0.0.1:${DASHBOARD_PORT:-8501}:8501"
     environment:
       DATABASE_URL: *database-url
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:-}
+      PROXY_READY_URL: http://proxy:8000/health/ready
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -93,5 +102,20 @@ services:
       proxy:
         condition: service_healthy
 
+  # Synthetic healthcare denial investigations: docker compose --profile rcm run --rm rcm-demo
+  # It reads the database only to print the evaluation results it waited for.
+  rcm-demo:
+    build: ./demos/rcm_denial
+    profiles: ["rcm"]
+    environment:
+      PROXY_URL: http://proxy:8000/v1
+      DEMO_MODEL: ${DEMO_MODEL:-gpt-4o-mini}
+      PROXY_API_KEY: ${PROXY_API_KEY:-}
+      DATABASE_URL: *database-url
+    depends_on:
+      proxy:
+        condition: service_healthy
+
 volumes:
   postgres_data:
+  proxy_spool:

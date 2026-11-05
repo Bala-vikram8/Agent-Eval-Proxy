@@ -3,4 +3,5 @@
 -r dashboard/requirements.txt
 -r demo_agent/requirements.txt
 -r mock_upstream/requirements.txt
+-r demos/rcm_denial/requirements.txt
 pytest==9.1.1

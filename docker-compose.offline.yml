@@ -8,6 +8,11 @@ services:
       MOCK_LATENCY_MS: "250"
       MOCK_JITTER_MS: "900"
       MOCK_STREAM_DELAY_MS: "40"
+      # Canned model output for the synthetic denial demo. Only requests with that demo's
+      # system prompt match it; the evaluator is not scripted.
+      MOCK_SCRIPT_PATH: /script/offline_script.json
+    volumes:
+      - ./demos/rcm_denial/offline_script.json:/script/offline_script.json:ro
 
   proxy:
     environment:

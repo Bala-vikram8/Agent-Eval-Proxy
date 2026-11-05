@@ -30,12 +30,28 @@ jobs:
       - run: pytest
         env:
           TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+      - name: Grounded evaluator on the labeled dataset (deterministic layer, no LLM)
+        run: python eval/run_dataset.py --judge deterministic
+
+  dependency-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install pip-audit
+      - run: |
+          for f in proxy eval dashboard demo_agent mock_upstream demos/rcm_denial; do
+            pip-audit -r "$f/requirements.txt" --progress-spinner off
+          done
 
   docker-e2e:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - run: scripts/e2e_offline.sh
+      - run: scripts/outage_drill.sh
       - if: failure()
         uses: actions/upload-artifact@v7
         with:

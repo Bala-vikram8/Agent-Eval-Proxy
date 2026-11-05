@@ -5,6 +5,7 @@ import os
 import socket
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -40,7 +41,8 @@ def wait_until_up(url: str, proc: subprocess.Popen, timeout: float = 20) -> None
 
 # Settings each test passes explicitly, never inherited from the developer's shell.
 CONTROLLED_ENV = {"OPENAI_API_KEY", "UPSTREAM_API_KEY", "UPSTREAM_BASE", "PROXY_API_KEY", "DATABASE_URL",
-                  "JUDGE_API_KEY", "JUDGE_BASE_URL", "JUDGE_MODEL"}
+                  "JUDGE_API_KEY", "JUDGE_BASE_URL", "JUDGE_MODEL", "TRACE_SPOOL_PATH", "REDACT_PII",
+                  "MOCK_SCRIPT_PATH", "UPSTREAM_TIMEOUT_SECONDS", "TRACE_SPOOL_MAX_ROWS"}
 
 
 @contextlib.contextmanager
@@ -111,7 +113,7 @@ def db(database):
     with contextlib.closing(psycopg2.connect(database)) as conn:
         conn.autocommit = True
         with conn.cursor() as cur:
-            cur.execute("TRUNCATE traces RESTART IDENTITY")
+            cur.execute("TRUNCATE traces, worker_heartbeats RESTART IDENTITY CASCADE")
     return database
 
 
@@ -132,6 +134,77 @@ def wait_for_traces(dsn: str, count: int, timeout: float = 10) -> list[dict]:
         time.sleep(0.05)
 
 
+class TcpRelay:
+    """A TCP forwarder in front of Postgres that a test can cut and restore, to simulate the
+    database going away and coming back without touching the real server."""
+
+    def __init__(self, target_host: str, target_port: int):
+        self.target = (target_host, target_port)
+        self.port = free_port()
+        self._server = None
+        self._conns: list[socket.socket] = []
+        self._lock = threading.Lock()
+
+    def start(self) -> None:
+        self._server = socket.socket()
+        self._server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._server.bind(("127.0.0.1", self.port))
+        self._server.listen(64)
+        threading.Thread(target=self._accept, args=(self._server,), daemon=True).start()
+
+    def stop(self) -> None:
+        """Refuse new connections and reset every open one."""
+        if self._server is not None:
+            # close() alone does not wake a thread blocked in accept() on Linux.
+            with contextlib.suppress(OSError):
+                self._server.shutdown(socket.SHUT_RDWR)
+            self._server.close()
+            self._server = None
+        with self._lock:
+            for conn in self._conns:
+                with contextlib.suppress(OSError):
+                    conn.shutdown(socket.SHUT_RDWR)
+                    conn.close()
+            self._conns.clear()
+
+    def _accept(self, server: socket.socket) -> None:
+        while True:
+            try:
+                client, _ = server.accept()
+            except OSError:
+                return
+            try:
+                upstream = socket.create_connection(self.target)
+            except OSError:
+                client.close()
+                continue
+            with self._lock:
+                self._conns += [client, upstream]
+            for a, b in ((client, upstream), (upstream, client)):
+                threading.Thread(target=self._pipe, args=(a, b), daemon=True).start()
+
+    @staticmethod
+    def _pipe(src: socket.socket, dst: socket.socket) -> None:
+        try:
+            while data := src.recv(65536):
+                dst.sendall(data)
+        except OSError:
+            pass
+        finally:
+            with contextlib.suppress(OSError):
+                dst.shutdown(socket.SHUT_RDWR)
+
+
+@pytest.fixture
+def pg_relay(database):
+    """(relay, dsn through the relay) for the test database."""
+    params = psycopg2.extensions.parse_dsn(database)
+    relay = TcpRelay(params.get("host", "localhost"), int(params.get("port", 5432)))
+    relay.start()
+    yield relay, psycopg2.extensions.make_dsn(database, host="127.0.0.1", port=relay.port)
+    relay.stop()
+
+
 @pytest.fixture(scope="session")
 def mock_upstream() -> str:
     with run_server("mock_upstream", "server:app", free_port(), {"MOCK_STREAM_DELAY_MS": "100"}, "/v1/models") as url:
@@ -139,12 +212,14 @@ def mock_upstream() -> str:
 
 
 @pytest.fixture(scope="session")
-def start_proxy():
-    """Factory: start a proxy with the given environment, stopped at session end."""
+def start_proxy(tmp_path_factory):
+    """Factory: start a proxy with the given environment, stopped at session end. Each proxy
+    gets its own trace spool file unless TRACE_SPOOL_PATH is passed."""
     stack = contextlib.ExitStack()
 
     def start(**env) -> str:
         env = {k: v for k, v in env.items() if v is not None}
+        env.setdefault("TRACE_SPOOL_PATH", str(tmp_path_factory.mktemp("spool") / "spool.db"))
         return stack.enter_context(run_server("proxy", "main:app", free_port(), env, "/health"))
 
     with stack:

@@ -16,6 +16,7 @@ import socket
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -121,11 +122,14 @@ def main() -> None:
         sys.exit("Set TEST_DATABASE_URL to a Postgres server this script may create a database on.")
     os.environ.setdefault("NO_PROXY", "127.0.0.1,localhost")
 
+    spool_dir = tempfile.mkdtemp(prefix="agenteval-bench-")
     with throwaway_database(admin_dsn) as dsn, \
             server("mock_upstream", "server:app", {"MOCK_LATENCY_MS": "0"}) as fast_mock, \
             server("mock_upstream", "server:app", {"MOCK_LATENCY_MS": str(UPSTREAM_LATENCY_MS)}) as slow_mock, \
-            server("proxy", "main:app", {"DATABASE_URL": dsn, "UPSTREAM_BASE": fast_mock, "UPSTREAM_API_KEY": "x"}) as fast_proxy, \
-            server("proxy", "main:app", {"DATABASE_URL": dsn, "UPSTREAM_BASE": slow_mock, "UPSTREAM_API_KEY": "x"}) as slow_proxy:
+            server("proxy", "main:app", {"DATABASE_URL": dsn, "UPSTREAM_BASE": fast_mock, "UPSTREAM_API_KEY": "x",
+                                         "TRACE_SPOOL_PATH": f"{spool_dir}/fast.db"}) as fast_proxy, \
+            server("proxy", "main:app", {"DATABASE_URL": dsn, "UPSTREAM_BASE": slow_mock, "UPSTREAM_API_KEY": "x",
+                                         "TRACE_SPOOL_PATH": f"{spool_dir}/slow.db"}) as slow_proxy:
 
         direct = sequential(fast_mock, SEQUENTIAL_REQUESTS)
         proxied = sequential(fast_proxy, SEQUENTIAL_REQUESTS)
